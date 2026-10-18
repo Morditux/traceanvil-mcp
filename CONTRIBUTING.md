@@ -27,11 +27,23 @@ go build ./...
 
 ```sh
 gofmt -l .          # must print nothing
+go mod tidy -diff
+go mod verify
 go vet ./...
 go test ./...
 go test -race ./...
 go build ./...
 ```
+
+Useful bounded checks:
+
+```sh
+GOCACHE="$PWD/.gocache" FUZZ_TIME=5s ./scripts/fuzz.sh
+GOCACHE="$PWD/.gocache" BENCH_TIME=3x ./scripts/bench.sh
+```
+
+Parser/API changes should add a fuzz target or seed and a benchmark when they
+process potentially large evidence.
 
 Pull requests should also:
 
@@ -71,6 +83,13 @@ Contributions must not:
 
 Read [SECURITY.md](SECURITY.md) before touching the runner, policy, artifact store
 or debugger backends.
+
+## Releases
+
+Release changes must follow [docs/release.md](docs/release.md) and
+[GOVERNANCE.md](GOVERNANCE.md): clean tree, full gate, checksums, SBOM, and
+optional human-controlled signing. Do not publish an unsigned tag as a signed
+release and do not commit `dist/`.
 
 ## Commit messages
 

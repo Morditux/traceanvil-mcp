@@ -1,9 +1,11 @@
 # Compatibility inventory
 
 Recorded on 2026-10-18 from a **read-only** inspection of the reference development
-machine and refreshed at J13 from a read-only inspection plus real GDB/LLDB,
+machine and refreshed at J14 from a read-only inspection plus real GDB/LLDB,
 Helgrind/DRD, ASan/UBSan/LSan/TSan, CTest, core-dump, controlled attach,
-Callgrind/Massif and fixed-command vgdb tests.
+Callgrind/Massif and fixed-command vgdb tests. CI runs Ubuntu 22.04 and 24.04
+with Go 1.25.x and stable; the reference host uses the newer toolchain listed
+below.
 Re-run `./scripts/preflight.sh` after changing the toolchain and update this
 table; CI runners may differ.
 
@@ -61,9 +63,9 @@ Transitive modules are pinned in `go.sum`. `./scripts/check.sh` runs
 
 Suggested explicit installation (human decision, never performed by the server):
 
-At J13, Valgrind, GDB/Gcore, LLDB, Clang, CMake/CTest, Ninja, ShellCheck,
+At J14, Valgrind, GDB/Gcore, LLDB, Clang, CMake/CTest, Ninja, ShellCheck,
 gdbserver, `vgdb`, `callgrind_annotate` and `ms_print` are installed. No package
-was installed for J13; the real GDB/LLDB tests use the existing GDB 17.1 and LLDB
+was installed for J14; the real GDB/LLDB tests use the existing GDB 17.1 and LLDB
 21.1.8 packages, the sanitizer tests use the existing GCC 15.2 sanitizer
 runtimes, the CTest tests use CMake/CTest 4.2.3, and the core/attach tests use
 the existing gcore/GDB and Yama scope 1. The diff tests are deterministic and
@@ -82,6 +84,16 @@ Read only; the project never modifies these values.
 | `kernel.yama.ptrace_scope` | 1 | Restricted ptrace; attach to unrelated processes is denied. |
 | `kernel.perf_event_paranoid` | 4 | Performance events are effectively unavailable to unprivileged users. |
 | `kernel.kptr_restrict` | 1 | Kernel pointers are hidden. |
+
+## Supported release matrix
+
+| Dimension | Supported/tested |
+|---|---|
+| OS | Ubuntu 22.04/24.04 GitHub runners for build/unit/race tests; real backend suites run on the reference host below (CI skips absent tools) |
+| Go | module baseline `1.25.x`, plus current `stable` |
+| Architecture | Linux `amd64` reference; release binaries also built for `arm64` |
+| Protocol | local stdio MCP, `schema_version = 1` payloads |
+| Release provenance | trimmed binaries, SPDX 2.3 SBOM, SHA-256 checksums, optional GPG signature |
 
 ## Expected behaviour on this machine
 

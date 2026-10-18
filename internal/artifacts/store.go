@@ -37,6 +37,9 @@ var (
 type Store struct {
 	root           string
 	maxBytesPerRun int64
+
+	lockMu   sync.Mutex
+	lockFile *os.File
 }
 
 // NewStore prepares the artifact root and returns a store.
@@ -72,6 +75,44 @@ func NewStore(root string, maxBytesPerRun int64) (*Store, error) {
 	}
 
 	return &Store{root: clean, maxBytesPerRun: maxBytesPerRun}, nil
+}
+
+// AcquireLock takes an exclusive advisory lock on the artifact root. It is
+// used to prevent a purge from racing a live server while allowing the live
+// server to own the root. The lock is released on process exit even if Release
+// is not called, but callers should call Release explicitly.
+func (s *Store) AcquireLock() error {
+	s.lockMu.Lock()
+	defer s.lockMu.Unlock()
+	if s.lockFile != nil {
+		return errors.New("artifacts: lock already held by this store")
+	}
+	path := filepath.Join(s.root, ".server.lock")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return fmt.Errorf("artifacts: open lock: %w", err)
+	}
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = file.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return errors.New("artifacts: report_dir is locked by another server or purge")
+		}
+		return fmt.Errorf("artifacts: acquire lock: %w", err)
+	}
+	s.lockFile = file
+	return nil
+}
+
+// ReleaseLock releases the advisory lock, if held.
+func (s *Store) ReleaseLock() {
+	s.lockMu.Lock()
+	defer s.lockMu.Unlock()
+	if s.lockFile == nil {
+		return
+	}
+	_ = syscall.Flock(int(s.lockFile.Fd()), syscall.LOCK_UN)
+	_ = s.lockFile.Close()
+	s.lockFile = nil
 }
 
 // MaxBytesPerRun returns the per-run artifact budget.

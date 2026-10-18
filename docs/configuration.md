@@ -25,6 +25,7 @@ never modifies the machine.
 | `backends` | object | no | Missing booleans default to `false`. |
 | `policy` | object | no | Defaults to `safe-default`, no elevated permission. |
 | `limits` | object | no | Missing limits are replaced by defaults. |
+| `storage` | object | no | Artifact age/count/byte retention; defaults are applied when omitted. |
 | `valgrind` | object | no | Optional suppression profiles for Memcheck. |
 | `ctest` | object | no | Trusted CTest projects and per-test timeout. |
 | `cores` | array of objects | no | Trusted core+executable profiles. |
@@ -133,6 +134,38 @@ as resolved. See [valgrind.md](valgrind.md#suppressions).
 `elevated-local` is accepted by validation. `attach` is implemented only
 through the explicit PID allowlist; `evaluate` remains unsupported and is never
 exposed by the default profile.
+
+### `storage`
+
+```json
+{
+  "storage": {
+    "max_age_days": 30,
+    "max_runs": 256,
+    "max_bytes": 10737418240,
+    "purge_on_start": false
+  }
+}
+```
+
+`max_age_days` (1–3650), `max_runs` (1–1,000,000) and `max_bytes`
+(1 MiB–1 TiB) bound persisted run directories under `report_dir`.
+`purge_on_start` is an explicit opt-in; when true the server applies the policy
+once before accepting requests and logs the summary. Otherwise use:
+
+```sh
+mcp-native-diagnostics purge --config config.json --dry-run
+mcp-native-diagnostics purge --config config.json
+```
+
+Purge removes only direct `run_<32 hex>` directories owned by the current user.
+It never follows symlinks or removes unknown entries. It takes an exclusive
+`flock` on `report_dir` and refuses to run while a server holds it, so stop the
+server first. The CLI is destructive by default; use `--dry-run` for inspection.
+A recent incomplete run without `result.json` and the newest run are protected
+from count/byte eviction; an over-bound warning is emitted if that prevents the
+limit from being met. Setting a storage value to `0` selects the documented
+default, not "unlimited".
 
 ### `limits`
 

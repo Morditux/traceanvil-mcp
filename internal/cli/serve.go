@@ -67,6 +67,26 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		return ExitFailure
 	}
 
+	if err := store.AcquireLock(); err != nil {
+		fmt.Fprintf(stderr, "mcp-native-diagnostics: %v\n", err)
+		return ExitFailure
+	}
+	cleanups = append(cleanups, store.ReleaseLock)
+
+	if cfg.Storage.PurgeOnStart {
+		result, purgeErr := store.Purge(ctx, artifacts.RetentionPolicy{
+			MaxAge:  time.Duration(cfg.Storage.MaxAgeDays) * 24 * time.Hour,
+			MaxRuns: cfg.Storage.MaxRuns, MaxBytes: cfg.Storage.MaxBytes,
+		}, false)
+		if purgeErr != nil {
+			logger.Warn("startup artifact purge failed", "error", purgeErr)
+		} else {
+			logger.Info("startup artifact purge completed",
+				"removed", len(result.Removed), "kept", result.Kept,
+				"removed_bytes", result.RemovedBytes, "kept_bytes", result.KeptBytes)
+		}
+	}
+
 	manager, err := jobs.NewManager(store, runner.New(), jobs.Options{
 		MaxJobs: cfg.Limits.MaxJobs,
 		Timeout: time.Duration(cfg.Limits.TimeoutSeconds) * time.Second,

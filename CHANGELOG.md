@@ -1,11 +1,26 @@
 # Changelog
 
-All notable changes to this project are documented here. The project is not
-released yet; milestones map to the development plan.
+All notable changes to this project are documented here. J0–J14 are complete;
+the release process produces checksummed, SBOM-accompanied binaries.
 
 ## Unreleased
 
 ### Added
+
+- J14: Ubuntu 22.04/24.04 CI matrix over Go 1.25.x and stable, plus a bounded
+  fuzz-smoke job and `go mod verify` in the shared gate.
+- J14: safe artifact retention/purge with age, run-count and byte bounds,
+  `storage.*` configuration, `purge --dry-run`, exclusive `report_dir` lock,
+  protection for recent incomplete/newest runs, explicit startup purge opt-in
+  and tests for symlinks/unknown entries.
+- J14: SPDX 2.3 SBOM generation from embedded Go build information (`sbom`
+  command, unique IDs/namespaces, Go module sums as labelled refs, arch-specific
+  documents), deterministic release build/checksum script, optional GPG signing
+  and tagged release workflow with unsigned artifacts and a full gate.
+- J14: bounded fuzz targets for DAP framing, Valgrind XML, Callgrind, Massif
+  and perf parsing; large-log parser benchmarks; operations, architecture,
+  release and governance documentation.
+- J14: release notes and v1.0 documentation links; optional `.deb` guidance.
 
 - J1: MCP server over stdio (`serve`) using the official Go SDK v1.8.0.
 - J1: strict JSON configuration with documented defaults and validation

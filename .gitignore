@@ -1,6 +1,7 @@
 # Compiled server binary (repository root) and local build output
 /mcp-native-diagnostics
 /build/
+/dist/
 
 # Binaries for programs and plugins
 *.exe

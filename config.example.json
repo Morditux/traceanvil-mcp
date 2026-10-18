@@ -30,6 +30,12 @@
     "attach_allowed_pids": [],
     "attach_terminate": false
   },
+  "storage": {
+    "max_age_days": 30,
+    "max_runs": 256,
+    "max_bytes": 10737418240,
+    "purge_on_start": false
+  },
   "limits": {
     "timeout_seconds": 120,
     "max_jobs": 2,

@@ -69,6 +69,13 @@ a fix before public disclosure.
   batch commands; no client path, expression, debugger command or shell flag is
   accepted. Missing/mismatched/truncated core evidence is incomplete, never a
   clean analysis.
+- Artifact retention/purge only removes direct `run_<32 hex>` directories owned
+  by the current user; it never follows symlinks or removes unknown entries.
+  Startup purge is explicit (`storage.purge_on_start`).
+- Release binaries are built with `-trimpath`, accompanied by SHA256SUMS and an
+  SPDX SBOM generated from embedded build information. GPG signing is optional
+  and requires an operator-supplied key; no key is generated or stored by the
+  server.
 - `debug_attach` currently uses the verified GDB path only; LLDB attach is not
   advertised. It requires `elevated-local`, `policy.attach=true` and the exact
   PID in `policy.attach_allowed_pids`. Before launching the adapter it checks

@@ -132,12 +132,19 @@ Output beyond the byte budget is discarded and marked truncated; the child is
 not blocked. A non-streaming artifact write that exceeds the quota returns
 `ErrQuota` / `ErrFileQuota`.
 
-There is no global retention or total-disk quota yet. J4 keeps up to 256 live
-analysis handles in memory; after eviction, `analysis_status`, `analysis_report`
-and `analysis_artifact` read the persisted manifest and report, so a run id
+Persisted runs are bounded **when retention is applied** by
+`storage.max_age_days`, `storage.max_runs` and `storage.max_bytes`. With
+`purge_on_start=false` (the default), disk use is not automatically bounded;
+run the explicit `purge` command or opt into startup purge. The command applies
+the policy, with
+`--dry-run` for inspection; `storage.purge_on_start` is an opt-in startup pass.
+Purge only removes direct `run_<32 hex>` directories owned by the current user,
+never follows symlinks or removes unknown entries, and must be run while the
+server is stopped. J4 keeps up to 256 live analysis handles in memory; after
+eviction, evidence tools read the persisted manifest and report, so a run id
 remains usable while its directory exists. There is no cross-session access
 control because the server is a single local stdio process and the opaque run id
-is the capability. Global retention, purge and multi-session scoping are J14
-work. The raw XML bound is enforced by polling and post-run truncation, not by a
-kernel quota, and a target can create untracked files in its `TMPDIR` (the run
-directory). This is a documented local-trust limitation.
+is the capability. The raw XML bound is enforced by polling and post-run
+truncation, not by a kernel quota, and a target can create untracked files in
+its `TMPDIR` (the run directory); purge accounts for all regular files in a run
+directory. This is a documented local-trust limitation.

@@ -14,7 +14,7 @@ The value of the project is not arbitrary command execution. It is:
 
 ## Project status
 
-**Early development — J13 (experimental perf/vgdb and prior tooling) complete.**
+**v1.0 release candidate — J14 hardening, retention and release tooling complete.**
 
 The repository now provides:
 
@@ -78,6 +78,27 @@ declared targets with fixed native-output flags. The debugger tools are
 deliberately narrow: no expression evaluation, raw memory read, debugger command
 passthrough or debuggee terminal I/O is exposed over MCP. Do not deploy this
 project yet.
+
+## Release and operations
+
+```sh
+VERSION=v1.0.0 ./scripts/release.sh
+GOCACHE="$PWD/.gocache" ./scripts/check.sh
+```
+
+The release script builds static `amd64`/`arm64` binaries, SPDX SBOMs and
+`SHA256SUMS`; optional GPG signing is described in
+[docs/release.md](docs/release.md). Artifact retention uses `storage.*`; with the default
+`purge_on_start=false`, disk use is bounded only when you run the explicit purge
+or opt into startup purge. Inspect and apply it with:
+
+```sh
+mcp-native-diagnostics purge --config config.json --dry-run
+mcp-native-diagnostics purge --config config.json
+```
+
+See [docs/operations.md](docs/operations.md) for backup, upgrade and security
+checklists.
 
 Roadmap, safety rules and acceptance criteria are defined in the project
 specification and tracked as milestones J0 to J14.
@@ -149,6 +170,8 @@ validation rule.
 | `serve --config <file>` | Runs the MCP server over stdio. |
 | `doctor --config <file>` | Prints config, path and capability state; launches no user program. |
 | `validate-config --config <file>` | Validates a configuration file and exits. |
+| `purge --config <file> [--dry-run]` | Applies artifact age/count/byte retention; stop the server first. |
+| `sbom [--output <file>] [--binary <path>]` | Emits an SPDX SBOM from embedded Go build information. |
 | `version` | Prints one line of build information to stdout. |
 | `help`, `-h`, `--help` | Prints usage to stdout. |
 | *(none)* | Prints usage to stderr, exit code `2`. |
@@ -212,7 +235,10 @@ format, [docs/diff.md](docs/diff.md) for run comparison,
 [docs/ctest.md](docs/ctest.md) for CTest integration,
 [docs/core-and-attach.md](docs/core-and-attach.md) for cores/attach,
 [docs/profile.md](docs/profile.md) for profiling,
-[docs/experimental.md](docs/experimental.md) for perf/vgdb, and
+[docs/experimental.md](docs/experimental.md) for perf/vgdb,
+[docs/operations.md](docs/operations.md) for operations,
+[docs/architecture.md](docs/architecture.md) for the architecture,
+[docs/release.md](docs/release.md) for releases, and
 [docs/debugger.md](docs/debugger.md) for the GDB/LLDB backends.
 
 ## Repository layout
@@ -234,6 +260,7 @@ internal/core/                Configured core-dump analysis with fixed GDB
 internal/profile/             Callgrind/Massif native parsers and comparisons
 internal/perf/                Experimental fixed perf stat runner/parser
 internal/vgdb/                Experimental fixed-command vgdb inspection
+internal/sbom/                SPDX 2.3 generation from embedded Go build info
 internal/analysis/            Analysis API, named errors, pagination and artifacts
 internal/dap/                 Generic DAP framing, client, state and capabilities
 internal/dap/daptest/         Scripted in-memory DAP adapter for tests
@@ -255,14 +282,22 @@ docs/ctest.md                 CTest project discovery, selection and reports
 docs/core-and-attach.md       Core profiles and controlled attach
 docs/profile.md               Callgrind/Massif profiling and comparison
 docs/experimental.md          Experimental perf and vgdb surfaces
+docs/operations.md            Build, retention, purge, backup, troubleshooting
+docs/architecture.md          Components, trust boundaries and data flow
+docs/release.md                Release build, SBOM, checksums and signing
+GOVERNANCE.md                 Roles, change process and release governance
 docs/dap.md                   DAP framing, client lifecycle, state and limits
 docs/debugger.md              GDB/LLDB backends, debug API, lifecycle and limits
 docs/mcp.md                   MCP transport, tool discovery and payloads
 docs/compatibility.md         Recorded toolchain inventory
 config.example.json           Example configuration
-scripts/check.sh              Formatting, vet, tests, race, build
+scripts/check.sh              Formatting, dependency verify, vet, tests, race, build
+scripts/fuzz.sh               Bounded parser/DAP fuzz campaign
+scripts/bench.sh              Large-log parser benchmarks
+scripts/release.sh            Cross-builds, SBOMs, checksums and optional signing
 scripts/preflight.sh          Read-only machine inventory
-.github/workflows/ci.yml      Continuous integration
+.github/workflows/ci.yml      Ubuntu/Go matrix plus fuzz smoke
+.github/workflows/release.yml Tagged unsigned release build
 ```
 
 Further analysis packages (`profile`, ...) are

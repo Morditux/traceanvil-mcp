@@ -14,13 +14,15 @@ concurrency:
 
 jobs:
   test:
-    name: go ${{ matrix.go }}
-    runs-on: ubuntu-24.04
+    name: ${{ matrix.os }} / go ${{ matrix.go }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         # 1.25.x is the module baseline; stable catches regressions early.
+        # Both supported Ubuntu LTS runners are exercised.
+        os: ["ubuntu-22.04", "ubuntu-24.04"]
         go: ["1.25.x", "stable"]
     steps:
       # Actions are pinned to immutable commit SHAs on purpose.
@@ -37,3 +39,24 @@ jobs:
 
       - name: Formatting, vet, tests and build
         run: ./scripts/check.sh
+
+  fuzz-smoke:
+    name: fuzz smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Bounded fuzz campaign
+        env:
+          FUZZ_TIME: 5s
+        run: ./scripts/fuzz.sh

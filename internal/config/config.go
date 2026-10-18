@@ -45,23 +45,32 @@ const (
 
 // Defaults applied when a limit is omitted (zero).
 const (
-	DefaultTimeoutSeconds   = 120
-	DefaultMaxJobs          = 2
-	DefaultMaxSessions      = 2
-	DefaultMaxResponseItems = 100
-	DefaultMaxReportBytes   = 10 << 20
-	DefaultCTestTimeout     = 30
+	DefaultTimeoutSeconds    = 120
+	DefaultMaxJobs           = 2
+	DefaultMaxSessions       = 2
+	DefaultMaxResponseItems  = 100
+	DefaultMaxReportBytes    = 10 << 20
+	DefaultCTestTimeout      = 30
+	DefaultStorageMaxAgeDays = 30
+	DefaultStorageMaxRuns    = 256
+	DefaultStorageMaxBytes   = int64(10) << 30
 )
 
 // Accepted ranges for limits.
 const (
-	MaxTimeoutSeconds = 86400
-	MaxMaxJobs        = 32
-	MaxMaxSessions    = 32
-	MinMaxReportBytes = 1024
-	MaxMaxReportBytes = 1 << 30
-	MaxResponseItems  = 10000
-	MaxCTestTimeout   = 600
+	MaxTimeoutSeconds    = 86400
+	MaxMaxJobs           = 32
+	MaxMaxSessions       = 32
+	MinMaxReportBytes    = 1024
+	MaxMaxReportBytes    = 1 << 30
+	MaxResponseItems     = 10000
+	MaxCTestTimeout      = 600
+	MinStorageMaxAgeDays = 1
+	MaxStorageMaxAgeDays = 3650
+	MinStorageMaxRuns    = 1
+	MaxStorageMaxRuns    = 1000000
+	MinStorageMaxBytes   = 1 << 20
+	MaxStorageMaxBytes   = int64(1) << 40
 )
 
 const (
@@ -93,6 +102,7 @@ type Config struct {
 	Limits         Limits        `json:"limits"`
 	Valgrind       Valgrind      `json:"valgrind"`
 	CTest          CTest         `json:"ctest"`
+	Storage        Storage       `json:"storage,omitempty"`
 	Cores          []CoreProfile `json:"cores,omitempty"`
 }
 
@@ -101,6 +111,15 @@ type CoreProfile struct {
 	ID         string `json:"id"`
 	Executable string `json:"executable"`
 	Core       string `json:"core"`
+}
+
+// Storage bounds persisted run artifacts. PurgeOnStart is an explicit opt-in;
+// a normal server start never deletes evidence implicitly.
+type Storage struct {
+	MaxAgeDays   int   `json:"max_age_days,omitempty"`
+	MaxRuns      int   `json:"max_runs,omitempty"`
+	MaxBytes     int64 `json:"max_bytes,omitempty"`
+	PurgeOnStart bool  `json:"purge_on_start,omitempty"`
 }
 
 // CTest holds trusted CTest projects and per-test defaults.
@@ -360,6 +379,9 @@ func (c *Config) Validate() error {
 	if err := c.validateCTest(roots); err != nil {
 		return err
 	}
+	if err := c.validateStorage(); err != nil {
+		return err
+	}
 	if err := c.validateCores(roots); err != nil {
 		return err
 	}
@@ -490,6 +512,19 @@ func validateCTestName(field, name string) error {
 	return nil
 }
 
+func (c *Config) validateStorage() error {
+	if c.Storage.MaxAgeDays < MinStorageMaxAgeDays || c.Storage.MaxAgeDays > MaxStorageMaxAgeDays {
+		return fieldError("storage.max_age_days", "must be between %d and %d", MinStorageMaxAgeDays, MaxStorageMaxAgeDays)
+	}
+	if c.Storage.MaxRuns < MinStorageMaxRuns || c.Storage.MaxRuns > MaxStorageMaxRuns {
+		return fieldError("storage.max_runs", "must be between %d and %d", MinStorageMaxRuns, MaxStorageMaxRuns)
+	}
+	if c.Storage.MaxBytes < MinStorageMaxBytes || c.Storage.MaxBytes > MaxStorageMaxBytes {
+		return fieldError("storage.max_bytes", "must be between %d and %d", MinStorageMaxBytes, MaxStorageMaxBytes)
+	}
+	return nil
+}
+
 func (c *Config) validateCores(roots []string) error {
 	if len(c.Cores) > MaxCoreProfiles {
 		return fieldError("cores", "at most %d core profiles are allowed", MaxCoreProfiles)
@@ -596,6 +631,15 @@ func (c *Config) applyDefaults() {
 	}
 	if c.CTest.TestTimeoutSeconds == 0 {
 		c.CTest.TestTimeoutSeconds = DefaultCTestTimeout
+	}
+	if c.Storage.MaxAgeDays == 0 {
+		c.Storage.MaxAgeDays = DefaultStorageMaxAgeDays
+	}
+	if c.Storage.MaxRuns == 0 {
+		c.Storage.MaxRuns = DefaultStorageMaxRuns
+	}
+	if c.Storage.MaxBytes == 0 {
+		c.Storage.MaxBytes = DefaultStorageMaxBytes
 	}
 }
 

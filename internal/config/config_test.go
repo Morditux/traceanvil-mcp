@@ -480,3 +480,26 @@ func TestParseAttachAndCoreProfiles(t *testing.T) {
 		t.Errorf("core = %q", cfg.Cores[0].Core)
 	}
 }
+
+func TestStorageDefaultsAndValidation(t *testing.T) {
+	cfg, err := Parse(strings.NewReader(validJSON()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Storage.MaxAgeDays != DefaultStorageMaxAgeDays ||
+		cfg.Storage.MaxRuns != DefaultStorageMaxRuns ||
+		cfg.Storage.MaxBytes != DefaultStorageMaxBytes {
+		t.Fatalf("storage defaults = %+v", cfg.Storage)
+	}
+	doc := `{
+		"schema_version": 1,
+		"workspace_roots": ["/tmp/ws"],
+		"report_dir": "/tmp/ws-reports",
+		"allowed_targets": [],
+		"storage": {"max_age_days": 4000, "max_runs": 1, "max_bytes": 1048576},
+		"limits": {}
+	}`
+	if _, err := Parse(strings.NewReader(doc)); err == nil {
+		t.Fatal("expected an invalid storage age error")
+	}
+}

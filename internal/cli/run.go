@@ -28,6 +28,8 @@ Commands:
   serve             Run the MCP server over stdio.
   doctor            Inspect configuration, paths and tool availability.
   validate-config   Validate a configuration file.
+  purge             Apply artifact retention and remove expired runs.
+  sbom              Emit an SPDX SBOM from embedded Go build information.
   version           Print build information.
   help              Print this help.
 
@@ -55,6 +57,12 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 
 	case "validate-config":
 		return runValidateConfig(args[1:], stdout, stderr)
+
+	case "purge":
+		return runPurge(ctx, args[1:], stdout, stderr)
+
+	case "sbom":
+		return runSBOM(args[1:], stdout, stderr)
 
 	case "version":
 		if len(args) > 1 {
