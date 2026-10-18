@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "workspace_roots": ["/home/user/work/native-project"],
+  "report_dir": "/home/user/.local/state/mcp-native-diagnostics",
+  "allowed_targets": [
+    {
+      "id": "solver-tests",
+      "program": "/home/user/work/native-project/build/tests/solver_tests",
+      "cwd": "/home/user/work/native-project",
+      "allowed_args": ["--gtest_filter=Core.*"]
+    }
+  ],
+  "backends": {
+    "valgrind": true,
+    "gdb": true,
+    "lldb": false
+  },
+  "policy": {
+    "profile": "safe-default",
+    "attach": false,
+    "evaluate": false
+  },
+  "limits": {
+    "timeout_seconds": 120,
+    "max_jobs": 2,
+    "max_sessions": 2,
+    "max_report_bytes": 10485760,
+    "max_response_items": 100
+  }
+}

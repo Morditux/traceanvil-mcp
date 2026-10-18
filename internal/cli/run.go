@@ -1,12 +1,13 @@
 // Package cli implements the command-line entry point.
 //
-// It owns argument parsing and exit codes only. Analysis, policy and protocol
-// logic live in their own packages and are wired in by later milestones. Every
-// function here writes explicitly to the provided writers so that the MCP
-// server can reserve stdout for the protocol when it is added in J1.
+// It owns argument parsing, orchestration and exit codes only. Analysis,
+// policy and protocol logic live in their own packages. Every function writes
+// explicitly to the provided writers so that stdout can be reserved for the
+// MCP protocol when serving.
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 
@@ -24,21 +25,37 @@ const usage = `Usage:
   mcp-native-diagnostics <command> [arguments]
 
 Commands:
-  version    Print build information.
-  help       Print this help.
+  serve             Run the MCP server over stdio.
+  doctor            Inspect configuration, paths and tool availability.
+  validate-config   Validate a configuration file.
+  version           Print build information.
+  help              Print this help.
 
-Run "mcp-native-diagnostics help" for this message.
+Use "mcp-native-diagnostics <command> --help" for command options.
 `
 
 // Run dispatches a single command line and returns the process exit code.
 // It never panics and never writes to a writer it was not given.
-func Run(args []string, stdout, stderr io.Writer) int {
+func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	if len(args) == 0 {
 		fmt.Fprint(stderr, usage)
 		return ExitUsage
 	}
 
 	switch args[0] {
+	case "serve":
+		return runServe(ctx, args[1:], stdin, stdout, stderr)
+
+	case "doctor":
+		return runDoctor(ctx, args[1:], stdout, stderr)
+
+	case "validate-config":
+		return runValidateConfig(args[1:], stdout, stderr)
+
 	case "version":
 		if len(args) > 1 {
 			fmt.Fprintf(stderr, "mcp-native-diagnostics: version takes no arguments\n\n")

@@ -21,6 +21,21 @@ Use GitHub's private vulnerability reporting on this repository
 You will receive an acknowledgement and a remediation plan. Please allow time for
 a fix before public disclosure.
 
+## Current surface (J1)
+
+- `serve` starts an MCP server over stdin/stdout. stdout carries only JSON-RPC
+  messages; logs and errors go to stderr.
+- `system_capabilities` is read-only. It reports build identity, policy, limits,
+  backend state, exposed tools and warnings. It never launches a program.
+- `doctor` and `validate-config` are local, read-only commands. `doctor` uses
+  `stat` for path checks and never executes a target.
+- Startup probes resolve enabled backend executables with `PATH` and run
+  `--version` only, with a 2-second timeout, bounded output and a minimal
+  environment. Relative `PATH` entries are rejected. `lldb-dap` is resolved but
+  not executed. No user program is run.
+- No analysis tool is exposed yet, so no target can be launched in this
+  milestone.
+
 ## Threat model
 
 The server is a **local stdio MCP server**. It does not authenticate its caller:
@@ -73,6 +88,9 @@ These are non-negotiable for every milestone:
 ## Hardening recommendations
 
 - Run the server as an unprivileged user dedicated to development work.
+- Run it with a trusted `PATH`: startup probes execute the first **absolute**
+  `gdb`/`valgrind` found there. Relative `PATH` entries are rejected, but a
+  writable absolute directory still lets a planted binary run during probing.
 - Keep `workspace_roots` as narrow as possible and avoid home directories.
 - Prefer the `safe-default` profile; opt in to elevated features explicitly.
 - Treat `perf`/ptrace restrictions as expected conditions, not bugs to bypass.

@@ -1,14 +1,19 @@
 // Command mcp-native-diagnostics is the entry point of the native dynamic
-// analysis MCP server. Repository scaffolding (J0) exposes the `version`
-// command only; `serve`, `doctor` and `validate-config` arrive in J1.
+// analysis MCP server.
 package main
 
 import (
+	"context"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/Morditux/traceanvil-mcp/internal/cli"
 )
 
 func main() {
-	os.Exit(cli.Run(os.Args[1:], os.Stdout, os.Stderr))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	os.Exit(cli.Run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }

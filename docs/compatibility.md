@@ -18,6 +18,16 @@ this table; CI runners may differ.
 | Perf | 7.0.14 (installed, kernel-restricted) |
 | Git | 2.53.0 |
 
+## Build dependencies
+
+| Module | Version |
+|---|---|
+| Go module baseline | `go 1.25.0` |
+| `github.com/modelcontextprotocol/go-sdk` | `v1.8.0` |
+
+Transitive modules are pinned in `go.sum`. `./scripts/check.sh` runs
+`go mod tidy -diff` so an untidy module graph fails locally and in CI.
+
 ## Backends and tools
 
 | Component | Observed state | Consequence | Milestone |
@@ -70,6 +80,9 @@ Read only; the project never modifies these values.
 
 ## Notes
 
+- At J1, `doctor` reports `backend.gdb` as `unknown` (binary discovered, DAP
+  probe planned for J6) and `backend.valgrind`/`backend.lldb` as `unavailable`.
+  `serve` still starts and `system_capabilities` works with no analysis backend.
 - Valgrind support varies with kernel, architecture and instruction set. A probe
   based on `--version` does not prove that Memcheck can run; an authorized fixture
   run is required during J3.

@@ -37,3 +37,6 @@ go.work.sum
 /AGENTS.md
 /INSTALL-UBUNTU.md
 /PLAN.md
+
+# Local configuration derived from config.example.json.
+/config.local.json

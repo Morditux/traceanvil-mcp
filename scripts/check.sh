@@ -18,6 +18,9 @@ if [[ -n "$unformatted" ]]; then
 	exit 1
 fi
 
+step "go mod tidy"
+go mod tidy -diff
+
 step "go vet"
 go vet ./...
 
