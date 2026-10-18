@@ -86,8 +86,8 @@ VERSION=v1.0.0 ./scripts/release.sh
 GOCACHE="$PWD/.gocache" ./scripts/check.sh
 ```
 
-The release script builds static `amd64`/`arm64` binaries, SPDX SBOMs and
-`SHA256SUMS`; optional GPG signing is described in
+The release script builds static `amd64`/`arm64` binaries, Debian packages,
+SPDX SBOMs and `SHA256SUMS`; optional GPG signing is described in
 [docs/release.md](docs/release.md). Artifact retention uses `storage.*`; with the default
 `purge_on_start=false`, disk use is bounded only when you run the explicit purge
 or opt into startup purge. Inspect and apply it with:

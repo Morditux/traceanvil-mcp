@@ -57,11 +57,12 @@ for arch in amd64 arm64; do
       -ldflags "-s -w -X github.com/Morditux/traceanvil-mcp/internal/version.version=${version} -X github.com/Morditux/traceanvil-mcp/internal/version.commit=${commit} -X github.com/Morditux/traceanvil-mcp/internal/version.date=${build_date}" \
       -o "$dist/$name" ./cmd/mcp-native-diagnostics
   chmod 0755 "$dist/$name"
+  "$repo_root/scripts/build-deb.sh" "$dist/$name" "${version#v}" "$arch"
   "$sbom_tool" sbom --binary "$dist/$name" --version "$version" --name "mcp-native-diagnostics-linux-${arch}" --created "$build_date" --output "$dist/${name}.spdx.json"
 done
 (
   cd "$dist"
-  sha256sum ./*.spdx.json ./*_linux_amd64 ./*_linux_arm64 | LC_ALL=C sort > SHA256SUMS
+  sha256sum ./*.spdx.json ./*.deb ./*_linux_amd64 ./*_linux_arm64 | LC_ALL=C sort > SHA256SUMS
 )
 
 if [[ -n "${RELEASE_GPG_KEY:-}" ]]; then

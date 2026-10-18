@@ -24,6 +24,7 @@ and Go toolchain can be compared by hash. It then emits:
 - `mcp-native-diagnostics_v1.0.0_linux_arm64`
 - one SPDX 2.3 `.spdx.json` per binary, generated from embedded Go build info
   with an architecture-specific document name and deterministic creation time;
+- one `.deb` per architecture, built from the same binary;
 - `SHA256SUMS`, sorted and covering binaries and SBOMs.
 
 Run the full gate before release:
@@ -63,9 +64,14 @@ jq . mcp-native-diagnostics_v1.0.0_linux_amd64.spdx.json >/dev/null
 Check the SBOM dependency names/versions and the embedded build metadata. A
 missing or modified artifact is not a release.
 
-## Optional Debian package
+## Debian package
 
-A `.deb` is optional. If produced, it must install the binary and an example
-configuration without enabling a daemon, privileged helper, setuid bit or
-post-install sysctl change. Document its contents and verify with
-`dpkg-deb --contents` before publication.
+`scripts/release.sh` also invokes `scripts/build-deb.sh` for amd64 and arm64.
+The package installs only `/usr/bin/mcp-native-diagnostics` plus documentation
+under `/usr/share/doc/mcp-native-diagnostics`; it has no service, maintainer
+script or setuid bit. `dpkg-deb` is required on the release host. Verify with:
+
+```sh
+dpkg-deb --info mcp-native-diagnostics_1.0.0_amd64.deb
+dpkg-deb --contents mcp-native-diagnostics_1.0.0_amd64.deb
+```

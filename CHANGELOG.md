@@ -15,8 +15,9 @@ the release process produces checksummed, SBOM-accompanied binaries.
   and tests for symlinks/unknown entries.
 - J14: SPDX 2.3 SBOM generation from embedded Go build information (`sbom`
   command, unique IDs/namespaces, Go module sums as labelled refs, arch-specific
-  documents), deterministic release build/checksum script, optional GPG signing
-  and tagged release workflow with unsigned artifacts and a full gate.
+  documents), deterministic release build/checksum script, amd64/arm64 Debian
+  packages, optional GPG signing and tagged release workflow with unsigned
+  artifacts and a full gate.
 - J14: bounded fuzz targets for DAP framing, Valgrind XML, Callgrind, Massif
   and perf parsing; large-log parser benchmarks; operations, architecture,
   release and governance documentation.

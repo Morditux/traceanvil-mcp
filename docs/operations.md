@@ -22,6 +22,16 @@ go build -trimpath -o mcp-native-diagnostics ./cmd/mcp-native-diagnostics
 `doctor` performs read-only checks and reports where each backend is hidden.
 It does not install packages, run a declared target or change kernel settings.
 
+## Debian package
+
+```sh
+sudo dpkg -i mcp-native-diagnostics_1.0.0_amd64.deb
+mcp-native-diagnostics version
+```
+
+The package installs the binary and documentation only. It does not install a
+daemon, enable a service, add a setuid bit or modify kernel settings.
+
 ## Configuration
 
 Start from `config.example.json`. Keep `report_dir` on a dedicated filesystem

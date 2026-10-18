@@ -2,6 +2,7 @@
 /mcp-native-diagnostics
 /build/
 /dist/
+/*.deb
 
 # Binaries for programs and plugins
 *.exe
