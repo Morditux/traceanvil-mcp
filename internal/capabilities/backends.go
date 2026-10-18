@@ -28,8 +28,8 @@ func NewConfigProbes(cfg *config.Config) []Probe {
 				[]string{"memcheck", "--xml=yes", "--error-exitcode", "--suppressions"},
 			).
 			WithNote("Memcheck tool and XML options verified from help output; every run revalidates the binary"),
-		NewBinaryProbe(BackendGDB, "gdb", "gdb", cfg.Backends.GDB, nil).
-			WithNote("DAP probe planned for J6"),
+		NewGDBProbe(cfg.Backends.GDB).
+			WithNote("no user program was run"),
 		NewBinaryProbe(BackendLLDB, "lldb", "lldb-dap", cfg.Backends.LLDB, nil).
 			WithoutVersionProbe().
 			WithNote("DAP handler probe planned for J7"),

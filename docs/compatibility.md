@@ -1,9 +1,9 @@
 # Compatibility inventory
 
 Recorded on 2026-10-18 from a **read-only** inspection of the reference development
-machine and refreshed at J5 from a read-only inspection. Re-run
-`./scripts/preflight.sh` after changing the toolchain and update this table; CI
-runners may differ.
+machine and refreshed at J6 from a read-only inspection plus real GDB DAP tests.
+Re-run `./scripts/preflight.sh` after changing the toolchain and update this
+table; CI runners may differ.
 
 ## Host
 
@@ -41,7 +41,7 @@ Transitive modules are pinned in `go.sum`. `./scripts/check.sh` runs
 | Go toolchain | available (1.27.0) | build and tests enabled | J0 |
 | gcc / g++ | available (15.2.0) | C/C++ fixtures and `-race` enabled | J2+ |
 | cmake / ctest | available (4.2.3) | CTest integration possible | J10 |
-| gdb | available (17.1); DAP mode not yet probed | GDB tooling stays hidden until a DAP probe succeeds | J6 |
+| gdb | available (17.1); DAP `initialize` verified | `backend.gdb` becomes `available`; the J6 debug tools are exposed while it remains available | J6 |
 | gdbserver | available (17.1); not probed | remote/`vgdb` scenarios possible but experimental | J13 |
 | valgrind | available (3.26.0); Memcheck XML probe passes | Memcheck pipeline and `analysis_start` exposed while the capability is available | J3/J4 |
 | vgdb | available (Valgrind 3.26.0); not probed | experimental scenarios deferred | J13 |
@@ -55,9 +55,10 @@ Transitive modules are pinned in `go.sum`. `./scripts/check.sh` runs
 
 Suggested explicit installation (human decision, never performed by the server):
 
-At J3/J4, Valgrind, GDB, LLDB, Clang, Ninja, ShellCheck, gdbserver,
-`callgrind_annotate` and `ms_print` are installed. No optional package used by
-the J3/J4 tests is missing.
+At J6, Valgrind, GDB, LLDB, Clang, Ninja, ShellCheck, gdbserver,
+`callgrind_annotate` and `ms_print` are installed. No package was installed for
+J6; the real GDB tests use the existing 17.1 package. No optional package used by
+the J6 tests is missing.
 
 `lldb-dap` may be shipped as `lldb-dap-<version>`; discovery must handle both names
 and record the resolved absolute path.
@@ -77,25 +78,53 @@ Read only; the project never modifies these values.
 - The server starts and serves `system_capabilities` regardless of backend
   availability.
 - On this machine `backend.valgrind` is `available`, so `analysis_start` is
-  published. `helgrind_run`, `drd_run`, `profile_callgrind`, `profile_massif`,
-  `profile_perf` and the LLDB backend must **not** appear in `tools/list` at
-  J4/J5. `analysis_status`, `analysis_cancel`, `analysis_report` and
-  `analysis_artifact` are always published by the J4/J5 server.
+  published; `backend.gdb` is also `available` after a real DAP `initialize`, so
+  `debug_start` is published while at least one declared target currently
+  resolves, and the other GDB action tools are published while GDB is available.
+  `helgrind_run`, `drd_run`, `profile_callgrind`, `profile_massif`,
+  `profile_perf` and the LLDB backend must **not** appear in `tools/list` at J6.
+  The analysis evidence tools and debug management tools stay published where
+  documented.
 - `backend.valgrind` is `available` after the functional Memcheck/XML help probe;
   every run revalidates the binary, and a capability refresh removes
-  `analysis_start` if the backend disappears.
-- GDB and LLDB records remain `unknown` until their isolated DAP probes (J6/J7);
-  a binary on `PATH` alone is not sufficient. The J5 DAP client is tested only
-  against the mock adapter and launches no debugger.
+  `analysis_start` if the backend disappears. The GDB probe launches `gdb
+  --quiet --nx --interpreter=dap`, completes `initialize`, records capabilities
+  and closes the process; it never loads a target. Every debug start revalidates
+  the binary and target policy.
+- LLDB remains `unknown` until its isolated DAP probe (J7); a binary on `PATH`
+  alone is not sufficient. The J6 surface is GDB-only.
+- GDB 17.1 does not answer `launch` until `configurationDone` arrives, and
+  dispatches the two requests concurrently. The implementation writes `launch`,
+  retries `configurationDone` only on the transient "launch or attach not
+  specified" response, and awaits the launch future. This quirk is covered by
+  real GDB integration tests and documented in [debugger.md](debugger.md).
+- GDB 17.1 advertises `supportTerminateDebuggee=true`. `debug_stop` nevertheless
+  sends `disconnect(terminateDebuggee=true)` and then terminates the GDB process
+  group (TERM, then KILL); a session never relies solely on the adapter
+  capability to stop the debuggee. A fixture that writes its own PID verifies
+  that the debuggee is gone after `debug_stop`. J6 refuses
+  `debug_stop(terminate=false)` with `unsupported_capability`: a real detach test
+  showed the inferior was not reliably preserved when GDB was released, so
+  detach is deferred rather than reported falsely. The session remains running
+  and can be stopped explicitly.
+- Real tests verify stop-on-entry, verified breakpoints, continue, pause, step,
+  threads, stack/scopes/locals, stripped-symbol degradation, stop while running,
+  debuggee PID termination and GDB process cleanup. GDB 17.1 gives GDB and the
+  debuggee different process group ids; cleanup of the debuggee is verified
+  explicitly rather than inferred from the GDB group. GDB and `cc` are required; tests skip with a documented
+  reason when either is unavailable.
 - No tool reports "no errors" when its backend is missing; the result is an
-  explicit unavailable/unsupported status.
+  explicit unavailable/unsupported status. Missing symbols are reported as
+  missing, not synthesized.
 
 ## Notes
 
 - At J1, `doctor` reported every backend as `unknown` (binary discovered) or
-  `unavailable`. As of J3/J4, `backend.valgrind` is `available` on this machine;
-  `backend.gdb` and `backend.lldb` remain `unknown` until J6/J7. J5's DAP client
-  is internal and does not change backend discovery.
+  `unavailable`. As of J3/J4, `backend.valgrind` is `available` on this machine.
+  At J6, `backend.gdb` is also `available` after the DAP handshake;
+  `backend.lldb` remains `unknown` until J7. The GDB capability probe does not
+  run a user program, but every `debug_start` executes the declared target, which
+  remains untrusted code.
 - Valgrind support varies with kernel, architecture and instruction set. The J3
   probe checks `--version` plus the Memcheck XML options in `--tool=memcheck
   --help`; the first authorized fixture run revalidates the binary. A help check

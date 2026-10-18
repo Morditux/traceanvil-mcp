@@ -21,7 +21,7 @@ Use GitHub's private vulnerability reporting on this repository
 You will receive an acknowledgement and a remediation plan. Please allow time for
 a fix before public disclosure.
 
-## Current surface (J4/J5)
+## Current surface (J6)
 
 - `serve` starts an MCP server over stdin/stdout. stdout carries only JSON-RPC
   messages; logs and errors go to stderr.
@@ -38,14 +38,63 @@ a fix before public disclosure.
   `stat` for path checks and never executes a target.
 - Capability probes run at startup and every 30 seconds. They resolve enabled
   backend executables with `PATH`, run `--version`, and for Valgrind additionally
-  run `--tool=memcheck --help` to verify Memcheck/XML support. They are bounded
-  (2-second timeout, bounded output, minimal environment), never run a user
-  program and never use sudo. Relative `PATH` entries are rejected. `lldb-dap`
-  is resolved but not executed.
+  run `--tool=memcheck --help` to verify Memcheck/XML support. The GDB probe
+  launches `gdb --quiet --nx --interpreter=dap` with the same hardening commands
+  used by sessions and a private `HOME`, sends one DAP `initialize` request,
+  records the negotiated capabilities and closes the process; it never loads a
+  user target. A rejected hardening command makes the capability `unsupported`. Probes are bounded (2-second timeout,
+  bounded output, minimal environment), never run a user program and never use
+  sudo. Relative `PATH` entries are rejected. `lldb-dap` is resolved but not
+  executed.
 - `analysis_start` is published only while `backend.valgrind` is `available`.
   Backend availability is revalidated at invocation and the Valgrind binary is
   revalidated immediately before each run. The evidence tools stay published so
   an in-flight or persisted run remains queryable if the backend disappears.
+- `debug_start` launches a declared target under GDB. It accepts a target id,
+  allowed arguments, a backend name (`gdb`) and `stop_on_entry`; it accepts no
+  path, PID, GDB flag, expression, memory address or shell command. The GDB
+  command line is fixed by the server. Target resolution reuses the same
+  symlink-aware workspace policy as analyses, and the GDB binary is revalidated
+  immediately before spawn.
+- GDB is started with `--quiet --nx --interpreter=dap`; user init files are
+  skipped, Python/GDB-script and local `.gdbinit` auto-loading is disabled,
+  debuginfod is disabled (no symbol download), startup-with-shell is off, history
+  saving is off, and `HOME`/`TMPDIR` point to a private `0700` session directory
+  removed on teardown. The inferior tty is `/dev/null`, so the debuggee cannot
+  read or write the DAP protocol pipe. No GDB command, script or expression can
+  be sent by a client. `debug_start` publishes only while `backend.gdb` is
+  `available` and a declared target currently resolves under policy, and
+  revalidates the capability, binary and target at invocation. Execution actions
+  are removed when the capability disappears.
+- `debug_set_breakpoints` resolves a source path against the session's validated
+  cwd, resolves symlinks, requires a regular file and requires containment in a
+  configured workspace root. At most 100 lines are accepted. A source outside
+  the roots is `source_denied`.
+- `debug_status` never contacts GDB and remains available for a retained
+  session. `debug_stop` terminates the debuggee by default. J6 does not expose
+  detach: `terminate=false` is refused with `unsupported_capability` because a
+  real GDB detach test did not reliably preserve the inferior. The session stays
+  running and can be stopped explicitly. Both status and stop stay published for
+  an existing session even if GDB later disappears, so resources can always be
+  released.
+- Debugger sessions are bounded by `limits.max_sessions`, a 15-minute idle
+  timeout, a 5-minute terminal retention and server shutdown cleanup. There is no
+  total wall-clock session deadline: a session kept active by status polling can
+  run until `debug_stop` or shutdown. GDB runs in a dedicated process group;
+  terminate sends TERM then KILL. GDB 17.1 places the inferior in its own process
+  group, so debuggee termination relies on GDB's teardown/ptrace behavior, not on
+  the GDB group alone. Detach is refused at J6; GDB 17.1 advertises
+  `supportTerminateDebuggee`, but the verified behavior did not preserve the
+  inferior reliably.
+  `debug_stop(terminate=true)` never relies solely on GDB's
+  `supportTerminateDebuggee` capability; detach itself is refused at J6.
+- Debugger responses omit instruction pointers, module paths, raw memory
+  references, debuggee terminal I/O and external source paths. Bounded adapter
+  error/stderr text may contain local paths, but not file contents. Workspace stack
+  sources are returned relative to a root. Variables are paged and value strings
+  are truncated at 2048 bytes. Missing symbols produce an explicit warning, never
+  fabricated source locations. No `debug_evaluate`, arbitrary attach, raw memory
+  read or GDB command passthrough is exposed.
 - The runner revalidates targets with `EvalSymlinks`, confines program and
   working directory to resolved workspace roots, uses process groups with
   TERM/KILL cleanup, does not inherit the server environment or stdin, and
@@ -74,10 +123,12 @@ a fix before public disclosure.
 - `analysis_cancel` never turns partial evidence into a successful "no errors"
   result; cancellation, timeout and parse failure all keep
   `analysis_complete=false`.
-- J5 adds an internal generic DAP client (`internal/dap`) for J6/J7. It launches
-  no debugger and adds no MCP tool. Framing is bounded before allocation
-  (64 KiB header, 16 MiB frame), `Content-Length` is a byte count, and malformed
-  or truncated frames are typed protocol failures.
+- The generic DAP client (`internal/dap`) is used by the J6 GDB backend. Framing
+  is bounded before allocation (64 KiB header, 16 MiB frame), `Content-Length` is
+  a byte count, and malformed or truncated frames are typed protocol failures.
+  The client also exposes an async request future used to order GDB's `launch`
+  and `configurationDone`; ordering retries only the documented transient GDB
+  rejection and remains bounded by the startup context.
 - The DAP client has exactly one reader and one bounded writer queue. Pending
   request futures, events and reverse handlers are explicitly bounded; a slow
   event consumer applies backpressure. Late responses are ignored and counted,
@@ -86,8 +137,10 @@ a fix before public disclosure.
   handler runs with bounded concurrency, is panic-safe and receives a context
   canceled by Close; it does not grant filesystem, process or network access by
   itself.
-- The J5 mock adapter (`internal/dap/daptest`) is test-only and implements its
-  own framing to exercise a second decoder.
+- The mock adapter (`internal/dap/daptest`) is test-only and implements its own
+  framing to exercise a second decoder. Real GDB integration and stdio MCP tests
+  are skipped when GDB or `cc` is unavailable; a skipped test is never reported
+  as a passing backend check.
 
 ## Threat model
 
@@ -132,7 +185,8 @@ These are non-negotiable for every milestone:
   the direct child is reaped. Detached children that call `setsid` can still
   escape this cleanup, and a hard server crash may leave children behind.
 - No arbitrary PID attach, no raw memory read, no generic GDB `evaluate`, and no
-  debugger command passthrough in the default profile.
+  debugger command passthrough in the default profile. Debug sessions are
+  GDB-only at J6, require a declared target, and detach is not exposed.
 - A tool appears in `tools/list` only when it is implemented, enabled by
   configuration, permitted by policy and usable on the machine. Availability is
   revalidated at invocation time.
@@ -171,8 +225,9 @@ These are non-negotiable for every milestone:
 - Prefer the `safe-default` profile; opt in to elevated features explicitly.
 - Treat `perf`/ptrace restrictions as expected conditions, not bugs to bypass.
 - Review the raw artifacts retention policy before collecting large reports.
-  J2–J5 enforce per-run quotas, bounded API responses and bounded DAP buffers
-  only; global retention and disk quotas arrive later.
+  J2–J6 enforce per-run/session quotas, bounded API responses, bounded DAP
+  buffers and short session retention only; global disk quotas and long-term
+  debugger evidence retention arrive later.
 - A target runs as the same OS user as the server and can inspect or modify its
   run directory, including the raw XML, between writer and parser. The pipeline
   detects symlink replacement and bounds the file, but it cannot prove evidence

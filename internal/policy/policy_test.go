@@ -221,3 +221,98 @@ func TestTargetIDs(t *testing.T) {
 		t.Errorf("TargetIDs() = %v, want [a b]", ids)
 	}
 }
+
+func TestResolveSourceInWorkspace(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "src", "main.c")
+	if err := os.WriteFile(source, []byte("int main(void) { return 0; }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolver := testResolver(root)
+
+	relative, err := resolver.ResolveSource("src/main.c", root)
+	if err != nil {
+		t.Fatalf("ResolveSource(relative) error = %v", err)
+	}
+	if relative.Path != source || relative.Relative != "src/main.c" {
+		t.Errorf("relative = %+v", relative)
+	}
+	absolute, err := resolver.ResolveSource(source, root)
+	if err != nil {
+		t.Fatalf("ResolveSource(absolute) error = %v", err)
+	}
+	if absolute.Path != source || absolute.Relative != "src/main.c" {
+		t.Errorf("absolute = %+v", absolute)
+	}
+}
+
+func TestResolveSourceDenials(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "src"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	outsideSource := filepath.Join(outside, "outside.c")
+	if err := os.WriteFile(outsideSource, []byte("int outside;\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "src", "link.c")
+	if err := os.Symlink(outsideSource, link); err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(root, "src", "directory")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	resolver := testResolver(root)
+
+	cases := []struct {
+		name string
+		path string
+	}{
+		{"traversal", "../outside.c"},
+		{"symlink escape", "src/link.c"},
+		{"directory", "src/directory"},
+		{"missing", "src/missing.c"},
+		{"empty", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := resolver.ResolveSource(tc.path, root); err == nil {
+				t.Fatalf("ResolveSource(%q) succeeded, want denial", tc.path)
+			} else {
+				var sourceErr *SourceError
+				if !errors.As(err, &sourceErr) {
+					t.Errorf("error = %T %v, want *SourceError", err, err)
+				}
+			}
+		})
+	}
+	if _, err := resolver.ResolveSource("src/main.c", "relative"); err == nil {
+		t.Error("ResolveSource with a relative base succeeded")
+	}
+}
+
+func TestHasUsableTarget(t *testing.T) {
+	root := t.TempDir()
+	program := filepath.Join(root, "fixture")
+	writeExecutable(t, program)
+	resolver := testResolver(root, config.Target{
+		ID: "fixture", Program: program, Cwd: root,
+	})
+	if !resolver.HasUsableTarget() {
+		t.Error("HasUsableTarget() = false for a valid target")
+	}
+	if err := os.Remove(program); err != nil {
+		t.Fatal(err)
+	}
+	if resolver.HasUsableTarget() {
+		t.Error("HasUsableTarget() = true after the program disappeared")
+	}
+	if testResolver(root).HasUsableTarget() {
+		t.Error("HasUsableTarget() = true without targets")
+	}
+}

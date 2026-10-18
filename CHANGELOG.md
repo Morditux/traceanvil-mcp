@@ -101,6 +101,27 @@ released yet; milestones map to the development plan.
   blocked transports, capabilities, reverse requests, state transitions and a
   frame-decoder fuzz target.
 - J5: ADR 0008 and `docs/dap.md`; README/SECURITY updated.
+- J6: GDB DAP backend (`internal/debugger`) with fixed hardened GDB arguments,
+  private `HOME`/`TMPDIR`, a `/dev/null` inferior tty, GDB process-group cleanup
+  and verified debuggee termination.
+- J6: `debug_start`, `debug_status`, `debug_set_breakpoints`, `debug_continue`,
+  `debug_pause`, `debug_step`, `debug_threads`, `debug_stack_trace`,
+  `debug_scopes`, `debug_variables` and `debug_stop` MCP tools.
+- J6: backend-neutral session manager with opaque `dbg_` ids, live-session
+  quota, idle expiry, terminal retention and orderly shutdown.
+- J6: GDB DAP functional capability probe (initialize handshake plus the same
+  hardening commands as a session, without loading a target); `backend.gdb` is
+  `available` only after both succeed.
+- J6: async DAP request futures and bounded GDB `launch`/`configurationDone`
+  ordering.
+- J6: workspace-confined source resolution for breakpoints, normalized
+  workspace-relative stack sources, explicit stripped-symbol degradation and
+  bounded threads/frames/scopes/variables.
+- J6: real GDB integration and stdio MCP tests, including stop-on-entry,
+  breakpoints, continue, pause, step, locals, stripped binaries, stop while
+  running, debuggee PID termination and process cleanup.
+- J6: ADR 0009 and `docs/debugger.md`; README, SECURITY, configuration, MCP and
+  compatibility documentation updated.
 
 ### Changed
 
@@ -124,6 +145,13 @@ released yet; milestones map to the development plan.
   the manager clamps values above its own limit.
 - J5: no MCP tool or CLI command is added. The DAP client is internal until J6;
   GDB and LLDB capability records remain `unknown`.
+- J6: `backend.gdb` becomes `available` after the DAP initialize probe; the GDB
+  `debug_start` is published while it is available and a target currently resolves
+  under policy; the other debug action tools require the available capability.
+  `debug_status`/`debug_stop` remain for retained sessions.
+- J6: `serve` constructs and closes the debugger service and session manager
+  with the other runtime components. No new CLI command or configuration field
+  is added; `limits.max_sessions` now bounds debugger sessions.
 
 ### Security
 
@@ -160,6 +188,17 @@ released yet; milestones map to the development plan.
 - J5: reverse requests are rejected by default; a configured handler is bounded,
   panic-safe and receives a context canceled by Close.
 - J5: the DAP client launches no debugger and exposes no new MCP surface.
+- J6: GDB runs with `--nx`, auto-load and debuginfod disabled,
+  startup-with-shell off, a private HOME and no client-supplied flags, commands
+  or scripts; the debuggee cannot read/write the DAP pipe.
+- J6: source paths are symlink-resolved and workspace-confined; external source
+  paths, instruction pointers, module paths and raw memory references are
+  omitted.
+- J6: sessions are bounded by quota/idle/retention; `debug_stop` terminates by
+  default and detach is not exposed at J6. No attach, expression evaluation or
+  raw memory access is exposed.
+- J6: debugger pages and values are bounded; missing symbols are reported
+  explicitly.
 
 ## 0.0.0 — 2026-10-18
 

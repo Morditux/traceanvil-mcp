@@ -91,6 +91,94 @@ func New(conn io.ReadWriteCloser, opts Options) (*Client, error) {
 // remains usable. A context cancellation removes the pending future; a response
 // arriving later is counted as late and ignored.
 func (c *Client) Request(ctx context.Context, command string, args any) (*Response, error) {
+	future, err := c.RequestAsync(ctx, command, args)
+	if err != nil {
+		return nil, err
+	}
+	return future.Wait(ctx)
+}
+
+// Future is one in-flight DAP request created by RequestAsync.
+//
+// RequestAsync writes the request frame before returning, so callers can use it
+// to order a request that blocks on another protocol step: a debug adapter may
+// not answer launch until configurationDone has been received. The first Wait
+// controls cancellation and caches its result; later calls return that same
+// result or error even if their context is shorter or already expired.
+type Future struct {
+	client   *Client
+	seq      int
+	command  string
+	response chan *Response
+
+	once sync.Once
+	mu   sync.Mutex
+	res  *Response
+	err  error
+}
+
+// Seq returns the request sequence assigned to the future.
+func (f *Future) Seq() int { return f.seq }
+
+// Command returns the DAP command name.
+func (f *Future) Command() string { return f.command }
+
+// Wait blocks until the response arrives, the context expires or the client
+// stops. A failed DAP response is returned as *ResponseError.
+func (f *Future) Wait(ctx context.Context) (*Response, error) {
+	if ctx == nil {
+		return nil, ErrNilContext
+	}
+	f.once.Do(func() {
+		response, err := f.wait(ctx)
+		f.mu.Lock()
+		f.res, f.err = response, err
+		f.mu.Unlock()
+	})
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.res, f.err
+}
+
+func (f *Future) wait(ctx context.Context) (*Response, error) {
+	// Prefer an already-delivered response over a concurrently expiring
+	// context. The read loop may have correlated the response just before the
+	// caller's deadline.
+	select {
+	case response := <-f.response:
+		return responseResult(response)
+	default:
+	}
+
+	select {
+	case response := <-f.response:
+		return responseResult(response)
+	case <-ctx.Done():
+		// The response may have been correlated between the two selects.
+		select {
+		case response := <-f.response:
+			return responseResult(response)
+		default:
+		}
+		f.client.removePending(f.seq)
+		return nil, ctx.Err()
+	case <-f.client.done:
+		return nil, f.client.closedError()
+	}
+}
+
+func responseResult(response *Response) (*Response, error) {
+	if !response.Success {
+		return nil, newResponseError(response)
+	}
+	return response, nil
+}
+
+// RequestAsync sends one DAP request and returns a future for its response. It
+// returns after the request frame has been written, without waiting for the
+// adapter. Callers must eventually call Wait (or close the client) so the
+// pending entry does not linger until shutdown.
+func (c *Client) RequestAsync(ctx context.Context, command string, args any) (*Future, error) {
 	if ctx == nil {
 		return nil, ErrNilContext
 	}
@@ -120,24 +208,19 @@ func (c *Client) Request(ctx context.Context, command string, args any) (*Respon
 	}
 	c.pending[seq] = responseCh
 	c.pendingMu.Unlock()
-	defer c.removePending(seq)
 
 	request := wireRequest{Seq: seq, Type: "request", Command: command, Arguments: args}
 	if err := c.send(ctx, request); err != nil {
+		c.removePending(seq)
 		return nil, err
 	}
 
-	select {
-	case response := <-responseCh:
-		if !response.Success {
-			return nil, newResponseError(response)
-		}
-		return response, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-c.done:
-		return nil, c.closedError()
-	}
+	return &Future{
+		client:   c,
+		seq:      seq,
+		command:  command,
+		response: responseCh,
+	}, nil
 }
 
 // Initialize performs capability negotiation. On success the client state is

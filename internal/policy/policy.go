@@ -140,6 +140,19 @@ func Environment(tmpDir string) []string {
 	return env
 }
 
+// HasUsableTarget reports whether at least one declared target currently
+// resolves under policy. It performs filesystem checks only and never executes
+// a target. Tool exposure uses this to hide a start tool that has no usable
+// input on the current machine.
+func (r *Resolver) HasUsableTarget() bool {
+	for _, id := range r.TargetIDs() {
+		if _, err := r.Resolve(id, nil); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // TargetIDs returns the configured target identifiers in stable order.
 func (r *Resolver) TargetIDs() []string {
 	ids := make([]string, 0, len(r.targets))
@@ -213,4 +226,87 @@ func validateArgs(allowed, requested []string) error {
 // source paths without inventing containment.
 func (r *Resolver) ResolvedRoots() []string {
 	return r.resolvedRoots()
+}
+
+// ResolvedSource is a source file that passed the workspace and regular-file
+// checks. Path is absolute and canonical; Relative is slash-separated and
+// relative to the matched workspace root.
+type ResolvedSource struct {
+	Path     string
+	Relative string
+	Root     string
+}
+
+// SourceError reports a source path rejected by the local policy.
+type SourceError struct {
+	Reason string
+}
+
+func (e *SourceError) Error() string {
+	return "policy: source denied: " + e.Reason
+}
+
+// ResolveSource validates a source path immediately before a debugger uses it.
+// A relative path is resolved against baseDir (the target working directory).
+// Symlinks are resolved before containment is checked, so a symlink cannot
+// escape a workspace root.
+func (r *Resolver) ResolveSource(sourcePath, baseDir string) (ResolvedSource, error) {
+	if sourcePath == "" {
+		return ResolvedSource{}, &SourceError{Reason: "path must not be empty"}
+	}
+	if len(sourcePath) > config.MaxPathBytes {
+		return ResolvedSource{}, &SourceError{Reason: "path is too long"}
+	}
+	if strings.ContainsRune(sourcePath, 0) {
+		return ResolvedSource{}, &SourceError{Reason: "path contains NUL"}
+	}
+	if baseDir == "" || !filepath.IsAbs(baseDir) {
+		return ResolvedSource{}, &SourceError{Reason: "base directory must be absolute"}
+	}
+
+	path := sourcePath
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(baseDir, path)
+	}
+	path = filepath.Clean(path)
+
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return ResolvedSource{}, &SourceError{Reason: "source file is not accessible"}
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return ResolvedSource{}, &SourceError{Reason: "source file is not accessible"}
+	}
+	if !info.Mode().IsRegular() {
+		return ResolvedSource{}, &SourceError{Reason: "source is not a regular file"}
+	}
+
+	roots := r.resolvedRoots()
+	rel, root, ok := relativeWithinAny(roots, resolved)
+	if !ok {
+		return ResolvedSource{}, &SourceError{Reason: "source resolves outside workspace roots"}
+	}
+	return ResolvedSource{
+		Path:     resolved,
+		Relative: filepath.ToSlash(rel),
+		Root:     root,
+	}, nil
+}
+
+// relativeWithinAny returns path relative to the first containing root.
+func relativeWithinAny(roots []string, path string) (string, string, bool) {
+	for _, root := range roots {
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			continue
+		}
+		if rel == "." {
+			return rel, root, true
+		}
+		if rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+			return rel, root, true
+		}
+	}
+	return "", "", false
 }

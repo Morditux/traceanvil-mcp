@@ -140,6 +140,8 @@ internal foundation, tested with a mock adapter and fuzz targets.
   or run a dedicated event loop.
 - Reverse handlers are cancelled but not joined; a handler that ignores its
   context can outlive the client.
-- `launch` is intentionally not wrapped in J5. J6 will implement launch/attach
-  semantics, set breakpoints, drive configuration and own teardown.
-- No MCP tool is added by J5; `debug_*` tools remain J6 work.
+- `launch` was intentionally not wrapped in J5. J6 implements GDB launch,
+  `configurationDone` ordering via `RequestAsync`, breakpoints, resume/pause/step,
+  stack and variable inspection, and teardown. Attach remains later work.
+- No MCP tool was added by J5. J6 adds the GDB `debug_*` tools through
+  `internal/debugger`; the DAP client itself stays internal.

@@ -14,7 +14,7 @@ The value of the project is not arbitrary command execution. It is:
 
 ## Project status
 
-**Early development — J5 (generic DAP client) complete.**
+**Early development — J6 (GDB backend and debug API) complete.**
 
 The repository now provides:
 
@@ -23,10 +23,14 @@ The repository now provides:
 - `doctor`, a read-only inspection of configuration, paths and capabilities;
 - a capability registry, periodic revalidation and conditional tool publication
   with `tools/list_changed`;
-- up to six MCP tools: `system_capabilities`, `analysis_start`,
-  `analysis_status`, `analysis_cancel`, `analysis_report` and
-  `analysis_artifact` (`analysis_start` is published only while the Valgrind
-  capability is available);
+- the J4 analysis tools (`analysis_start`, `analysis_status`, `analysis_cancel`,
+  `analysis_report`, `analysis_artifact`) plus the J6 GDB debug tools
+  (`debug_start`, `debug_status`, `debug_set_breakpoints`, `debug_continue`,
+  `debug_pause`, `debug_step`, `debug_threads`, `debug_stack_trace`,
+  `debug_scopes`, `debug_variables`, `debug_stop`). `debug_start` is published
+  only while `backend.gdb` is available and a usable target exists; the
+  execution/action tools require GDB, and status/stop remain available for an
+  existing session;
 - a bounded runner: allowlisted targets, symlink revalidation, process-group
   cleanup, timeouts/cancellation, bounded output, atomic private artifacts and
   job lifecycle (`internal/policy`, `runner`, `artifacts`, `jobs`);
@@ -41,13 +45,19 @@ The repository now provides:
   request/response correlation, late-response accounting, events, timeouts,
   cancellation, capability negotiation, session state transitions, reverse
   requests and a scripted mock adapter (`internal/dap/daptest`);
-- a functional Valgrind probe that exposes `backend.valgrind` as `available` only
-  after Memcheck XML support is verified.
+- a GDB DAP backend (`internal/debugger`): declared-target launch, session
+  state, breakpoints, continue/pause/step, threads, stack, scopes, variables,
+  explicit termination (detach deferred), session quotas and idle retention;
+- functional capability probes: Valgrind exposes `backend.valgrind` only after
+  Memcheck XML support is verified, and GDB exposes `backend.gdb` only after a
+  real DAP `initialize` handshake. Neither probe runs a user program.
 
 `analysis_start` launches one allowlisted target under Valgrind; the other
-analysis tools only inspect its bounded evidence. The J5 DAP client is internal
-and does not launch a debugger or add an MCP tool: GDB arrives with J6, LLDB with
-J7, sanitizers and CTest with J9/J10, profilers with J12/J13. Do not deploy this
+analysis tools only inspect its bounded evidence. `debug_start` launches one
+allowlisted target under GDB through DAP; the other debug tools inspect a stopped
+session. LLDB, sanitizers, CTest and profilers remain later milestones. The GDB backend
+is real but deliberately narrow: no attach, expression evaluation, raw memory
+read, debugger command passthrough or debuggee terminal I/O. Do not deploy this
 project yet.
 
 Roadmap, safety rules and acceptance criteria are defined in the project
@@ -58,8 +68,9 @@ specification and tracked as milestones J0 to J14.
 - Linux (Ubuntu 24.04 LTS or newer is the reference platform), `amd64` first.
 - Go **1.25 or newer** (CI tests `1.25.x` and the current stable release).
 - A C toolchain (`gcc`) for `go test -race` and the C fixtures.
-- Valgrind for the real Memcheck end-to-end tests; those tests skip with a
-  documented reason when Valgrind or `cc` is unavailable.
+- Valgrind for the real Memcheck end-to-end tests and GDB for the real debugger
+  tests; those tests skip with a documented reason when Valgrind, GDB or `cc` is
+  unavailable.
 
 Analysis backends have additional requirements (Valgrind, GDB, LLDB, sanitizers,
 `perf`). Their availability is detected at runtime and missing tools hide the
@@ -138,16 +149,36 @@ read-only and never launches a program.
 `analysis_cancel` stops the process group; `analysis_report` returns the compact
 summary plus a filtered, bounded page of diagnostics with an opaque cursor;
 `analysis_artifact` returns bounded excerpts of `memcheck.xml`, `analysis.json`,
-stdout, stderr or `result.json`. No tool accepts a filesystem path or a shell
-command, and partial evidence is never returned as a clean result.
+stdout, stderr or `result.json`.
+
+`debug_start` launches one declared target under GDB over DAP and returns a
+`session_id`; `stop_on_entry` defaults to true. `debug_set_breakpoints` resolves a
+source file inside a workspace root (symlink escapes rejected);
+`debug_continue` is asynchronous; `debug_pause` and `debug_step` wait briefly for
+the next stop. Poll `debug_status` until `stop_generation` changes whenever the
+response still reports `running`. `debug_threads`,
+`debug_stack_trace`, `debug_scopes` and `debug_variables` return bounded pages;
+`debug_stop` terminates by default. J6 does not expose detach:
+`terminate=false` returns `unsupported_capability` because a real GDB detach did
+not reliably preserve the inferior. Debuggee stdout, stderr and stdin are not
+exposed: GDB's inferior tty is `/dev/null` so the debuggee cannot read or write
+the DAP pipe.
+
+No tool accepts a shell command, arbitrary executable path, PID, expression,
+memory address or debugger script. Partial evidence is never returned as a clean
+result, and missing symbols are reported rather than invented.
 
 Tools are published from the capability registry. `analysis_start` appears only
-while `backend.valgrind` is `available`; a missing backend never prevents the
-server from starting or hides persisted evidence. Capabilities are revalidated
-every 30 seconds and `notifications/tools/list_changed` is emitted when the
-exposed set changes. All payloads carry `schema_version = 1`. See
-[docs/mcp.md](docs/mcp.md) for schemas, error codes and pagination, and
-[docs/valgrind.md](docs/valgrind.md) for the evidence format.
+while `backend.valgrind` is `available`; `debug_start` appears only while
+`backend.gdb` is `available` and a declared target currently resolves under
+policy. Execution actions appear while GDB is available; `debug_status` and
+`debug_stop` stay available for an existing session even if GDB disappears. A
+missing backend never prevents the server from starting or hides persisted
+analysis evidence. Capabilities are revalidated every 30 seconds and
+`notifications/tools/list_changed` is emitted when the exposed set changes. All
+payloads carry `schema_version = 1`. See [docs/mcp.md](docs/mcp.md) for schemas,
+error codes and pagination, [docs/valgrind.md](docs/valgrind.md) for the evidence
+format and [docs/debugger.md](docs/debugger.md) for the GDB backend.
 
 ## Repository layout
 
@@ -165,7 +196,8 @@ internal/valgrind/            Memcheck options, XML parser and analysis service
 internal/analysis/            Analysis API, named errors, pagination and artifacts
 internal/dap/                 Generic DAP framing, client, state and capabilities
 internal/dap/daptest/         Scripted in-memory DAP adapter for tests
-internal/mcpserver/           MCP server, tool publication, analysis tools
+internal/debugger/            GDB process, sessions, manager and debug API
+internal/mcpserver/           MCP server, tool publication, analysis and debug tools
 internal/version/             Build information
 testdata/fixtures/c/          Reviewed C fixtures for Memcheck E2E tests
 testdata/fixtures/valgrind/   Static valid/truncated/malformed XML fixtures
@@ -176,6 +208,7 @@ docs/configuration.md         Configuration reference
 docs/artifacts.md             Run directory layout and manifests
 docs/valgrind.md              Memcheck pipeline, report schema and limits
 docs/dap.md                   DAP framing, client lifecycle, state and limits
+docs/debugger.md              GDB backend, debug API, session lifecycle and limits
 docs/mcp.md                   MCP transport, tool discovery and payloads
 docs/compatibility.md         Recorded toolchain inventory
 config.example.json           Example configuration
@@ -184,8 +217,8 @@ scripts/preflight.sh          Read-only machine inventory
 .github/workflows/ci.yml      Continuous integration
 ```
 
-Further analysis packages (`dap`, `debugger`, `sanitizer`, `profile`, `ctest`,
-...) are introduced by their milestones.
+Further analysis packages (`lldb`, `sanitizer`, `profile`, `ctest`, ...) are
+introduced by their milestones.
 
 ## Development
 
@@ -193,8 +226,8 @@ Further analysis packages (`dap`, `debugger`, `sanitizer`, `profile`, `ctest`,
 ./scripts/check.sh      # gofmt, vet, go test, go test -race, go build
 ./scripts/preflight.sh  # read-only inventory; changes nothing
 
-# Focused DAP checks:
-go test ./internal/dap
+# Focused DAP and GDB checks:
+go test ./internal/dap ./internal/debugger
 go test -fuzz=FuzzReadMessage -fuzztime=5s ./internal/dap
 ```
 
@@ -220,7 +253,12 @@ go test -fuzz=FuzzReadMessage -fuzztime=5s ./internal/dap
 - DAP client tests for fragmented frames, UTF-8 byte lengths, malformed and
   oversized frames, out-of-order and late responses, EOF/Close unblocking,
   pending/backpressure limits, blocked transports, capabilities, reverse
-  requests, state transitions and a fuzz target for the frame decoder.
+  requests, async launch/configurationDone ordering, state transitions and a
+  fuzz target for the frame decoder;
+- real GDB integration and stdio MCP tests for stop-on-entry, verified
+  breakpoints, continue/pause/step, threads, stack, scopes and locals, plus a
+  stripped-symbol fixture that asserts degraded evidence is explicit. They skip
+  when `gdb` or `cc` is missing.
 
 `preflight.sh` never installs packages, never edits kernel settings and never
 executes a user program. Installing tools is an explicit, human-approved step.

@@ -16,6 +16,7 @@ import (
 	"github.com/Morditux/traceanvil-mcp/internal/artifacts"
 	"github.com/Morditux/traceanvil-mcp/internal/capabilities"
 	"github.com/Morditux/traceanvil-mcp/internal/config"
+	"github.com/Morditux/traceanvil-mcp/internal/debugger"
 	"github.com/Morditux/traceanvil-mcp/internal/jobs"
 	"github.com/Morditux/traceanvil-mcp/internal/mcpserver"
 	"github.com/Morditux/traceanvil-mcp/internal/policy"
@@ -102,6 +103,15 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	if maxReportBytes > analysis.DefaultMaxReportBytes {
 		maxReportBytes = analysis.DefaultMaxReportBytes
 	}
+	debugService, err := newDebuggerService(cfg, resolver, registry, logger)
+	if err != nil {
+		fmt.Fprintf(stderr, "mcp-native-diagnostics: %v\n", err)
+		return ExitFailure
+	}
+	if debugService != nil {
+		cleanups = append(cleanups, debugService.Close)
+	}
+
 	analysisService, err := analysis.New(analysis.Options{
 		Store:          store,
 		Backend:        analysis.NewValgrindBackend(valgrindService),
@@ -128,6 +138,14 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		if err := server.Register(definition); err != nil {
 			logger.Error("register analysis tool", "tool", definition.Name, "error", err)
 			return ExitFailure
+		}
+	}
+	if debugService != nil {
+		for _, definition := range mcpserver.DebugDefinitions(debugService, registry) {
+			if err := server.Register(definition); err != nil {
+				logger.Error("register debug tool", "tool", definition.Name, "error", err)
+				return ExitFailure
+			}
 		}
 	}
 	server.SyncTools()
@@ -167,6 +185,44 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		return ExitFailure
 	}
 	return ExitSuccess
+}
+
+// newDebuggerService builds the GDB debug API when the backend is enabled.
+// A disabled backend gets no debug tools at all; an enabled but currently
+// unavailable backend keeps management tools hidden until it can be verified.
+func newDebuggerService(cfg *config.Config, resolver *policy.Resolver, registry *capabilities.Registry, logger *slog.Logger) (*debugger.Service, error) {
+	if !cfg.Backends.GDB {
+		return nil, nil
+	}
+	return debugger.NewService(debugger.ServiceOptions{
+		Resolver:       resolver,
+		Roots:          resolver.ResolvedRoots(),
+		BackendEnabled: true,
+		BinaryProvider: func() (string, string, error) {
+			record, ok := registry.Get(capabilities.BackendGDB)
+			if !ok {
+				return "", "", errors.New("backend.gdb capability is not registered")
+			}
+			if record.State != capabilities.StateAvailable || record.Path == "" {
+				reason := record.Reason
+				if reason == "" {
+					reason = "gdb is " + string(record.State)
+				}
+				return "", "", errors.New(reason)
+			}
+			return record.Path, record.Version, nil
+		},
+		BackendAvailable: func() (bool, string) {
+			record, ok := registry.Get(capabilities.BackendGDB)
+			if !ok {
+				return false, "backend.gdb capability is not registered"
+			}
+			return record.State == capabilities.StateAvailable, record.Reason
+		},
+		Logger:           logger,
+		MaxSessions:      cfg.Limits.MaxSessions,
+		MaxResponseItems: cfg.Limits.MaxResponseItems,
+	})
 }
 
 // refreshFunc revalidates capabilities and reconciles tool exposure.

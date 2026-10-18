@@ -1,9 +1,9 @@
-# Generic DAP client (J5)
+# Generic DAP client (J5, used by J6)
 
-J5 adds an internal Debug Adapter Protocol (DAP) client shared by the future GDB
-and LLDB backends. It is **not exposed through MCP**: no debug tool is published
-until J6, and no debugger is launched by this milestone. J5 is exercised by unit,
-concurrency and fuzz tests against an in-memory mock adapter.
+J5 adds an internal Debug Adapter Protocol (DAP) client shared by the GDB and
+future LLDB backends. J6 uses it for real GDB sessions through the debug tool
+surface; LLDB remains J7. The client is not callable directly over MCP: backend
+policy, target resolution and debug tools live in `internal/debugger`.
 
 ```text
 internal/dap/          framing, client, state machine, capabilities, errors
@@ -72,6 +72,14 @@ and OS pipes do.
   send means no frame is written. A context canceled after a frame is already
   being written cannot recall it; this is an inherent limitation of a generic
   `io.Writer` and is documented in the ADR.
+- `RequestAsync` writes the request frame and returns a `*Future` without
+  waiting for the adapter response. `Future.Wait(ctx)` retrieves the correlated
+  result exactly once and caches it for later calls. This exists for adapters
+  (notably GDB) whose `launch` response only arrives after a separate
+  `configurationDone` request: the backend writes `launch`, sends
+  `configurationDone`, then awaits the launch future. An async future still
+  counts against `MaxPendingRequests` until it is awaited, cancelled or the
+  client closes.
 
 The writer queue is bounded (32 frames by default). When it is full, `send`
 blocks until space is available or the context/Close ends the wait. Before a
@@ -222,7 +230,8 @@ invalid envelope fields, write short-writes, out-of-order responses, late
 responses after timeout, DAP error responses, EOF and Close unblocking pending
 requests, pending limits, cancellation before send, a blocked transport,
 capability negotiation, reverse requests (success, rejection and panic), event
-state transitions, stop-on-entry, and the fuzz decoder.
+state transitions, stop-on-entry, async launch/configurationDone ordering,
+async cancellation and late responses, and the fuzz decoder.
 
 ## Limitations
 
@@ -234,5 +243,11 @@ state transitions, stop-on-entry, and the fuzz decoder.
 - The event channel has one consumer; `WaitForEvent` discards unmatched events.
 - Reverse handlers are cancelled but not joined; a blocking handler can outlive
   the client.
-- J5 does not launch or attach any debugger and adds no MCP tool. GDB/LLDB
-  backends, breakpoints, stack and variable tools are J6/J7 work.
+- The client has no generic read timeout; an idle session is expected. The GDB
+  backend bounds each request and closes the transport to unblock a session.
+- GDB 17.1 dispatches `launch` and `configurationDone` concurrently and can
+  reject `configurationDone` with "launch or attach not specified" before the
+  launch state is installed. The J6 backend retries only that transient response
+  with a bounded backoff; this is an adapter quirk, not a generic DAP rule.
+- J5 itself launches no debugger and adds no MCP tool. The GDB backend and debug
+  tools are J6; LLDB, attach and expression evaluation remain later work.

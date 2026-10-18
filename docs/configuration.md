@@ -68,10 +68,15 @@ arguments. Arguments are always passed as a list, never through a shell.
 
 Enabling a backend allows probing and tool exposure. It never installs software.
 Valgrind is functionally probed for Memcheck XML support; `analysis_start` is
-published only while `backend.valgrind` is `available`. GDB and LLDB remain
-discovery-only and `unknown` until their DAP probes land (J6/J7). The evidence
-tools (`analysis_status`, `analysis_cancel`, `analysis_report`,
-`analysis_artifact`) stay published so an existing run remains queryable.
+published only while `backend.valgrind` is `available`. GDB is functionally
+probed by launching `gdb --quiet --nx --interpreter=dap` and completing the DAP
+`initialize` handshake without loading a target; `debug_start` is published only
+while `backend.gdb` is `available` and at least one declared target currently
+resolves under policy. Execution actions require GDB; LLDB remains
+discovery-only and `unknown` until its DAP probe lands at J7. The analysis evidence tools (`analysis_status`, `analysis_cancel`,
+`analysis_report`, `analysis_artifact`) stay published so an existing run remains
+queryable; `debug_status` and `debug_stop` stay published for an existing session
+so it can always be released.
 
 ### `valgrind`
 
@@ -129,15 +134,18 @@ the maximum are rejected.
 - `max_response_items` bounds list/response cardinality. Diagnostic pages use
   `min(max_response_items, 500)` items and default to 50; the effective cap is
   reported as `limits.max_page_items` in `system_capabilities`.
-- `max_sessions` is reserved for the debugger session manager (J6).
+- `max_sessions` bounds concurrent live debugger sessions. Terminal sessions are
+  retained briefly for `debug_status`/`debug_stop` but do not consume a live
+  slot. Idle sessions are closed after 15 minutes; terminal records are retained
+  for 5 minutes. These retention bounds are internal defaults at J6.
 
 ## Capability probing
 
 At startup the server resolves enabled backend executables using the server
 process `PATH` and records their absolute path and version. Relative `PATH`
 entries are rejected. Probing is bounded (2 seconds per probe, concurrently),
-uses a minimal fixed environment (`PATH`, `LC_ALL=C`) and never runs a user
-program.
+uses a minimal fixed environment (`PATH`, `LC_ALL=C`, a private `HOME`) and never
+loads or runs a user program.
 
 Probes run at startup and again every 30 seconds, independently of tool calls.
 A capability change reconciles `tools/list` and emits
@@ -146,16 +154,21 @@ A capability change reconciles `tools/list` and emits
 | Backend | Executable | State now |
 |---|---|---|
 | Valgrind | `valgrind` | `available` when `--version` and `--tool=memcheck --help` verify Memcheck XML support |
-| GDB | `gdb` | `unknown` until the J6 DAP probe |
+| GDB | `gdb` | `available` when the DAP `initialize` handshake succeeds; no target is loaded |
 | LLDB | `lldb-dap` | `unknown` until the J7 DAP probe |
 
 The Valgrind probe runs only `--version` and `--tool=memcheck --help` with a
 short timeout and `LC_ALL=C`; it never runs a user program and never uses sudo.
-A discovered GDB/LLDB binary is still reported as `unknown`, not `available`,
-because a binary on `PATH` does not prove that DAP works. Every Memcheck run
-revalidates the Valgrind binary. A missing binary at start is a typed
-`backend_unavailable` error; a binary that disappears before `exec` produces a
-`tool_error` report, never "no errors".
+The GDB probe runs `--version`, then starts GDB with `--quiet --nx
+--interpreter=dap` plus the same hardening `-ex` commands used by sessions and a
+private `HOME`, sends one DAP `initialize` request and closes the process. It
+never loads a target, and a rejected hardening command makes the capability
+`unsupported`. A discovered GDB/LLDB binary is not
+by itself sufficient: `backend.gdb` stays `unknown` or `unsupported` until the
+handshake succeeds, and LLDB stays `unknown` until J7. Every Memcheck run and
+debugger start revalidates the backend binary. A missing binary at start is a
+typed `backend_unavailable` error; a binary that disappears before `exec`
+produces a `tool_error` or `start_failed` error, never "no errors".
 
 `lldb-dap` is resolved but not executed, because its `--version` behaviour is
 not guaranteed to terminate. Versioned adapter names (`lldb-dap-XX`) are not

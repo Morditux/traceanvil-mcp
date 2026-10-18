@@ -21,26 +21,49 @@ service is running: they never launch a program and remain usable for an
 in-flight run or a run persisted by a previous server process, even if the
 backend later disappears. They return `run_not_found` when no such run exists.
 
+`debug_start` requires `backend.gdb = available` **and** at least one declared
+target that currently resolves under policy (exists, is executable and stays
+inside a workspace root). The resume/pause/step, breakpoint, threads, stack, scopes and variables
+tools require `backend.gdb = available`. `debug_status` and `debug_stop` are
+published when GDB is available or when an existing session is retained, so a
+session can always be inspected and released even if GDB later disappears. The
+J6 surface is GDB-only; the `backend` input accepts only `gdb`.
+
 Capabilities are probed at startup and revalidated every 30 seconds,
 independently of tool calls. The server advertises `tools.listChanged = true` and
 emits `notifications/tools/list_changed` whenever the exposed set changes. A
 client must refresh its tool list on that notification; clients that do not
 support dynamic lists must reconnect.
 
-| Tool | Launches a program | Requires `backend.valgrind` | Read-only |
+| Tool | Launches a program | Requires | Read-only |
 |---|---|---|---|
-| `system_capabilities` | no | no | yes |
-| `analysis_start` | **yes**, an allowlisted target under Valgrind | yes | no |
-| `analysis_status` | no | no | yes |
-| `analysis_cancel` | no (signals a run started by this server) | no | no |
-| `analysis_report` | no | no | yes |
-| `analysis_artifact` | no | no | yes |
+| `system_capabilities` | no | — | yes |
+| `analysis_start` | **yes**, an allowlisted target under Valgrind | `backend.valgrind` | no |
+| `analysis_status` | no | — | yes |
+| `analysis_cancel` | no (signals a run started by this server) | — | no |
+| `analysis_report` | no | — | yes |
+| `analysis_artifact` | no | — | yes |
+| `debug_start` | **yes**, an allowlisted target under GDB | `backend.gdb` and a usable target | no |
+| `debug_status` | no | GDB or a retained session | yes |
+| `debug_set_breakpoints` | no | `backend.gdb` | no |
+| `debug_continue` | no (resumes a process) | `backend.gdb` | no |
+| `debug_pause` | no (stops a process) | `backend.gdb` | no |
+| `debug_step` | no (resumes a process) | `backend.gdb` | no |
+| `debug_threads` | no | `backend.gdb` | yes |
+| `debug_stack_trace` | no | `backend.gdb` | yes |
+| `debug_scopes` | no | `backend.gdb` | yes |
+| `debug_variables` | no | `backend.gdb` | yes |
+| `debug_stop` | no (terminates a session; detach is refused at J6) | GDB or a retained session | no |
 
 ## Shared conventions
 
-- Every payload has a `schema_version` (`1` at J4/J5). It changes only for an
+- Every payload has a `schema_version` (`1` at J4–J6). It changes only for an
   incompatible shape change; additive fields keep the version.
 - `run_id` is an opaque `run_<32 lowercase hex>` identifier. It is not a path.
+- `session_id` is an opaque `dbg_<32 lowercase hex>` identifier. It is not a
+  path and never exposes a PID.
+- `stop_generation` increments on every debugger `stopped` event. Frame, scope
+  and variable references are valid only for the generation that produced them.
 - `analysis_status.tool` is the requested analysis tool (`memcheck`);
   `analysis_report.tool` is the canonical report's engine (`valgrind`).
 - The **job state** (`state`) is distinct from the **business result**
@@ -341,6 +364,107 @@ invalid bytes are replaced with U+FFFD and `invalid_utf8_replaced=true`. Control
 characters in captured output are preserved as evidence: treat excerpt text as
 untrusted data.
 
+
+## Debug tools (J6)
+
+The debug API launches one declared target under GDB over DAP. It never accepts
+an executable path, PID, GDB flag, expression, memory address, debugger script or
+shell command. GDB runs with `--quiet --nx --interpreter=dap`, auto-loaded
+Python/GDB scripts and local `.gdbinit` disabled, debuginfod disabled,
+startup-with-shell disabled and a private `HOME`; the debuggee's inferior tty is
+`/dev/null`, so it cannot read or write the DAP pipe. The J6 backend is GDB-only.
+
+### `debug_start`
+
+**Input**
+
+| Field | Type | Required | Rules |
+|---|---|---|---|
+| `target_id` | string | yes | An id declared in `allowed_targets`; never a path. |
+| `backend` | string | no | Only `gdb`; omitted means `gdb`. |
+| `args` | array of strings | no | Multiset subset of the target's `allowed_args`. |
+| `stop_on_entry` | boolean | no | Default `true`. GDB stops at the process entry point, often in the dynamic loader. |
+
+The response is a `debug_status`-shaped `Status` with a new `session_id`. It
+returns after the DAP `initialize`/`launch`/`configurationDone` handshake and,
+with `stop_on_entry=true`, after the first `stopped` event. GDB reports
+`reason=stopped` at entry; set a breakpoint before continuing to reach source.
+
+### `debug_status`
+
+Reports `state` (`starting`, `running`, `stopped`, `terminated`, `detached`,
+`failed`), `stop_generation`, the latest `stop` event (`reason`, `thread_id`,
+`all_threads_stopped`, `hit_breakpoints`), `exit.exit_code` when reported,
+capability flags, timestamps, bounded warnings and the last error. It never
+contacts GDB and remains available after the debuggee exits.
+
+`running` after a resume means the adapter accepted the request, not that the
+process has started executing. Poll until `stop_generation` changes.
+
+### Breakpoints and inspection
+
+| Tool | Input (besides `session_id`) | Behaviour |
+|---|---|---|
+| `debug_set_breakpoints` | `source_path`, `lines[]` | Requires a stopped session. `source_path` is absolute or relative to the target cwd, must resolve inside a workspace root, must be a regular file and must not escape through a symlink. At most 100 lines; duplicates are removed. Returns the adapter-reported `verified` state; unverified breakpoints are explicit. |
+| `debug_threads` | `start?`, `count?` | One bounded page of adapter-reported threads. |
+| `debug_stack_trace` | `thread_id?`, `start_frame?`, `levels?`, `stop_generation?` | Requires stopped. At most 100 frames per call; `has_more`/`next_frame` when more exist. |
+| `debug_scopes` | `frame_id`, `stop_generation?` | Requires stopped. Returns scopes and `variables_reference` values for the current generation. |
+| `debug_variables` | `variables_reference`, `start?`, `count?`, `stop_generation?` | Requires stopped. At most 200 children per page and 2048 bytes per value; child expansion is a separate request. |
+
+Sources under a workspace root are returned as slash-separated relative paths.
+External source paths are omitted and marked `external=true`; instruction
+pointers, module paths, raw memory references and debuggee terminal output are
+not exposed. A stripped or missing-symbol stack is returned with an explicit
+warning instead of invented source locations.
+
+### Resume, pause and stop
+
+`debug_continue` is acknowledged asynchronously. `debug_step`
+(`kind=next|in|out`) and `debug_pause` also return `accepted=true`, but wait up
+to 5 seconds for the next stopped event so a normal step/pause can inspect the
+new frame immediately. All three return the current state and
+`stop_generation`; if the state is still `running`, poll `debug_status` for the
+next stop. The stopped thread is used when `thread_id` is omitted;
+`debug_pause` defaults to the first thread reported by GDB. A resume that times
+out leaves the reported state `running`, because a request already written to
+the adapter cannot be recalled.
+
+`debug_stop` terminates the debuggee by default (`terminate` omitted or `true`).
+J6 does not implement detach: `terminate=false` returns `unsupported_capability`
+and leaves the session running, so call `debug_stop` with `terminate=true`. GDB
+17.1 advertises `supportTerminateDebuggee`, but real tests showed that releasing
+GDB did not reliably preserve the inferior, so the server fails closed instead
+of claiming a detach. The call is idempotent: stopping an already terminated
+session returns `already_stopped=true` and its final status.
+
+### State and references
+
+`stopped` means GDB reported a stop, not that any analysis succeeded. A
+`stopped` event increments `stop_generation`; frame ids, scope references and
+variable references from an older generation may be rejected by GDB and must not
+be reused after a resume. `debug_stack_trace`, `debug_scopes` and
+`debug_variables` accept an optional `stop_generation`; a mismatching value is
+rejected with `stale_reference` instead of returning evidence from another
+stop. Contexts, idle retention and server shutdown terminate
+sessions. Detach is not exposed at J6; a terminated session is the final state.
+
+### Debug limits
+
+| Limit | Value |
+|---|---|
+| Concurrent live sessions | `limits.max_sessions` (1–32, default 2) |
+| Idle live session | closed after 15 minutes without an API operation |
+| Retained terminal session | 5 minutes |
+| Breakpoint lines per request | 100 |
+| Stack frames per page | 100 |
+| Threads per page | 500 (also capped by `limits.max_response_items`) |
+| Variables per page | 200 (also capped by `limits.max_response_items`) |
+| One variable value | 2048 bytes, UTF-8 boundary, `value_truncated` |
+| DAP request timeout | 10 seconds |
+| Session startup timeout | 15 seconds |
+| Stop-on-entry wait | 5 seconds |
+| Session stop/disconnect timeout | 5 seconds |
+
 ## `system_capabilities`
 
 **Input:** an empty object. **Output (`structuredContent`):**
@@ -387,7 +511,18 @@ untrusted data.
     {"name": "analysis_status", "state": "available", "exposed": true, "reason": "implemented and enabled"},
     {"name": "analysis_cancel", "state": "available", "exposed": true, "reason": "implemented and enabled"},
     {"name": "analysis_report", "state": "available", "exposed": true, "reason": "implemented and enabled"},
-    {"name": "analysis_artifact", "state": "available", "exposed": true, "reason": "implemented and enabled"}
+    {"name": "analysis_artifact", "state": "available", "exposed": true, "reason": "implemented and enabled"},
+    {"name": "debug_start", "state": "available", "required_capability": "backend.gdb", "exposed": true, "reason": "DAP initialize verified"},
+    {"name": "debug_status", "state": "available", "exposed": true, "reason": "implemented and enabled"},
+    {"name": "debug_set_breakpoints", "state": "available", "required_capability": "backend.gdb", "exposed": true, "reason": "DAP initialize verified"},
+    {"name": "debug_continue", "state": "available", "required_capability": "backend.gdb", "exposed": true, "reason": "DAP initialize verified"},
+    {"name": "debug_pause", "state": "available", "required_capability": "backend.gdb", "exposed": true, "reason": "DAP initialize verified"},
+    {"name": "debug_step", "state": "available", "required_capability": "backend.gdb", "exposed": true, "reason": "DAP initialize verified"},
+    {"name": "debug_threads", "state": "available", "required_capability": "backend.gdb", "exposed": true, "reason": "DAP initialize verified"},
+    {"name": "debug_stack_trace", "state": "available", "required_capability": "backend.gdb", "exposed": true, "reason": "DAP initialize verified"},
+    {"name": "debug_scopes", "state": "available", "required_capability": "backend.gdb", "exposed": true, "reason": "DAP initialize verified"},
+    {"name": "debug_variables", "state": "available", "required_capability": "backend.gdb", "exposed": true, "reason": "DAP initialize verified"},
+    {"name": "debug_stop", "state": "available", "exposed": true, "reason": "implemented and enabled"}
   ],
   "warnings": []
 }
@@ -410,11 +545,11 @@ hard cap.
 | `unknown` | Could not be verified, including binary-only discovery. |
 
 Valgrind becomes `available` only after the binary and its Memcheck XML options
-are verified. GDB and LLDB remain discovery-only and therefore `unknown` when
-their executable exists: a binary on `PATH` does not prove that a DAP session
-works. J5 added the internal generic DAP client, but no `debug_*` tool is
-published until the GDB backend lands in J6 and the LLDB backend in J7. See
-[dap.md](dap.md) for the transport, state machine and limits.
+are verified. GDB becomes `available` only after a real DAP `initialize`
+handshake succeeds; merely finding `gdb` on `PATH` is not sufficient. LLDB
+remains discovery-only and `unknown` until J7. See [dap.md](dap.md) for the
+transport client and [debugger.md](debugger.md) for the GDB backend, session
+lifecycle and limits.
 
 ### Probe fields
 
@@ -431,7 +566,8 @@ published until the GDB backend lands in J6 and the LLDB backend in J7. See
 |---|---|
 | `invalid_argument` | Malformed or out-of-range request field, option or offset. |
 | `unknown_tool` | Tool not implemented by this build. |
-| `tool_disabled` | Disabled by configuration. |
+| `tool_disabled` | Analysis tool disabled by configuration. |
+| `backend_disabled` | Debugger/backend disabled by configuration. |
 | `backend_unavailable` | Backend missing, unusable or not functionally verified. |
 | `target_unknown` | `target_id` is not declared in configuration. |
 | `policy_denied` | Target or arguments denied by local policy. |
@@ -444,7 +580,16 @@ published until the GDB backend lands in J6 and the LLDB backend in J7. See
 | `artifact_unavailable` | Requested artifact is missing or rejected by the store. |
 | `canceled` | The caller's context was canceled. |
 | `timeout` | The caller's context deadline expired. |
-| `server_closed` | The analysis service is closed. |
+| `server_closed` | The analysis or debugger service is closed. |
+| `source_denied` | A debugger source path is unavailable inside workspace roots (missing, non-regular, outside roots, or a symlink escape). The response is deliberately generic; the detailed reason is local stderr. |
+| `session_not_found` | Unknown or expired debugger session id. |
+| `not_stopped` | The debug operation requires a stopped session. |
+| `not_running` | `debug_pause` requires a running session. |
+| `session_terminated` | The debuggee has already terminated or detached. |
+| `stale_reference` | A frame/scope/variable request carried a stop_generation that is no longer current. |
+| `unsupported_capability` | The adapter does not support the requested operation. |
+| `start_failed` | GDB or the DAP handshake could not start the session. |
+| `protocol_error` | A DAP request failed without a usable adapter result. |
 | `internal` | Unexpected server failure. Never a diagnostic. |
 
 ## Limits
@@ -460,6 +605,8 @@ published until the GDB backend lands in J6 and the LLDB backend in J7. See
 | Decoded report cache | 16 MiB estimated memory per entry (report JSON plus a per-record allowance), 64 MiB total, 16 entries | `reportCache` |
 | Concurrent full-report loads | 2 (further requests stream a page instead of waiting) | `loadSlots` |
 | Status/report warnings | 32 entries, 4 KiB each | `normalizeWarnings` |
+| Debug session page | 100 frames, 500 threads, 200 variables | `debugger` service |
+| Debug session values | 2048 bytes per variable value | `debugger` session |
 
 The cache only accelerates repeated pagination. It is keyed by the opaque run id
 and invalidated when the stored report size or modification time changes. Entries
@@ -469,9 +616,12 @@ reader instead.
 ## Error behaviour
 
 Unknown tools and invalid arguments are rejected by the MCP layer. A backend that
-disappears after startup does not crash the server: `analysis_start` is removed
-from `tools/list` at the next capability refresh, and invocation revalidates the
-backend and returns `backend_unavailable` rather than a false "no errors".
+disappears after startup does not crash the server: `analysis_start` or
+`debug_start` and the execution actions are removed from `tools/list` at the next
+capability refresh, and invocation revalidates the backend and returns
+`backend_unavailable` rather than a false "no errors". `debug_status` and
+`debug_stop` remain available for a retained session and still return its
+state/cleanup result.
 
 The server never reports "no errors" when a backend is missing, a probe is
 incomplete, XML is truncated, parsing fails, output is truncated or a response

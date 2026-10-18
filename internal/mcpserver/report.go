@@ -96,11 +96,13 @@ func (s *Server) BuildReport() Report {
 
 func (s *Server) warnings() []string {
 	warnings := []string{
-		"Memcheck is the only implemented analysis tool; GDB and LLDB remain discovery-only (J6/J7).",
+		"Memcheck is the only implemented analysis tool; GDB debugging is implemented at J6 and LLDB remains discovery-only (J7).",
 		"analysis_start is published only while backend.valgrind is available; analysis_status, analysis_report and analysis_artifact remain available for existing runs.",
+		"debug_start and execution actions are published only while backend.gdb is available; debug_status and debug_stop remain available for an existing session so it can always be released.",
+		"Debugger sessions are GDB-only. Arbitrary attach, expression evaluation, memory reads, GDB command execution and debugger scripts are not exposed.",
 		"Capability probes run at startup and periodically; tools/list_changed is emitted when tool availability changes.",
-		"Diagnostics are tool-reported. analysis_complete=false means the evidence is partial; a zero count is not evidence of absence.",
-		"Report pages and artifact excerpts are bounded; omitted data is reported explicitly and never treated as absent.",
+		"Diagnostics and debugger observations are tool-reported. analysis_complete=false means the evidence is partial; a zero count is not evidence of absence, and missing symbols are reported rather than invented.",
+		"Report and debugger pages are bounded; omitted data is reported explicitly and never treated as absent.",
 	}
 
 	if s.cfg == nil {
@@ -113,7 +115,7 @@ func (s *Server) warnings() []string {
 		warnings = append(warnings, "All external backends are disabled by configuration.")
 	}
 	if len(s.cfg.AllowedTargets) == 0 {
-		warnings = append(warnings, "No analysis target is configured.")
+		warnings = append(warnings, "No target is configured.")
 	}
 	return warnings
 }

@@ -49,6 +49,7 @@ func TestClientInitializeCapabilitiesAndEvents(t *testing.T) {
 	client, adapter := newClientPair(t, Options{})
 	caps := initializeClient(t, client, adapter, map[string]any{
 		"supportsConfigurationDoneRequest": true,
+		"supportTerminateDebuggee":         true,
 		"supportsConditionalBreakpoints":   false,
 		"unknownCapability":                true,
 	})
@@ -57,6 +58,9 @@ func TestClientInitializeCapabilitiesAndEvents(t *testing.T) {
 	}
 	if caps.SupportsConditionalBreakpoints {
 		t.Error("supportsConditionalBreakpoints = true")
+	}
+	if !caps.SupportsTerminateDebuggee {
+		t.Error("supportTerminateDebuggee was not decoded")
 	}
 	if !client.Supports("unknownCapability") {
 		t.Error("unknownCapability is not reported")
@@ -891,5 +895,122 @@ func TestClientWaitForEventDiscardsOtherEvents(t *testing.T) {
 	}
 	if event.Name != "stopped" {
 		t.Errorf("event = %q, want stopped", event.Name)
+	}
+}
+
+func TestClientRequestAsyncOrdersLaunchBeforeConfigurationDone(t *testing.T) {
+	client, adapter := newClientPair(t, Options{})
+
+	var mu sync.Mutex
+	var order []string
+	var launchRequest daptest.Request
+
+	adapter.Handle("launch", func(req daptest.Request) *daptest.Payload {
+		mu.Lock()
+		order = append(order, "launch")
+		launchRequest = req
+		mu.Unlock()
+		return nil // responded later, like GDB after configurationDone
+	})
+	adapter.Handle("configurationDone", func(daptest.Request) *daptest.Payload {
+		mu.Lock()
+		order = append(order, "configurationDone")
+		mu.Unlock()
+		return &daptest.Payload{Success: true}
+	})
+
+	initializeClient(t, client, adapter, nil)
+	ctx, cancel := requestContext(t)
+	defer cancel()
+	if err := client.BeginLaunch(); err != nil {
+		t.Fatal(err)
+	}
+	future, err := client.RequestAsync(ctx, "launch", map[string]any{"program": "/tmp/example"})
+	if err != nil {
+		t.Fatalf("RequestAsync() error = %v", err)
+	}
+	if future.Command() != "launch" || future.Seq() <= 0 {
+		t.Errorf("future = %+v", future)
+	}
+
+	if _, err := client.Request(ctx, "configurationDone", nil); err != nil {
+		t.Fatalf("configurationDone error = %v", err)
+	}
+
+	mu.Lock()
+	first := append([]string(nil), order...)
+	request := launchRequest
+	mu.Unlock()
+	if len(first) != 2 || first[0] != "launch" || first[1] != "configurationDone" {
+		t.Fatalf("request order = %v, want launch before configurationDone", first)
+	}
+
+	if err := adapter.Respond(request, daptest.Payload{Success: true, Body: map[string]any{"ok": true}}); err != nil {
+		t.Fatal(err)
+	}
+	response, err := future.Wait(ctx)
+	if err != nil {
+		t.Fatalf("Future.Wait() error = %v", err)
+	}
+	if response.Command != "launch" {
+		t.Errorf("response = %+v", response)
+	}
+	again, err := future.Wait(ctx)
+	if err != nil || again != response {
+		t.Errorf("second Wait() = %+v, %v, want the cached response", again, err)
+	}
+}
+
+func TestClientRequestAsyncCancellationCountsLateResponse(t *testing.T) {
+	client, adapter := newClientPair(t, Options{})
+
+	launchSeen := make(chan daptest.Request, 1)
+	adapter.Handle("launch", func(req daptest.Request) *daptest.Payload {
+		launchSeen <- req
+		return nil
+	})
+
+	initializeClient(t, client, adapter, nil)
+	if err := client.BeginLaunch(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	future, err := client.RequestAsync(ctx, "launch", nil)
+	if err != nil {
+		t.Fatalf("RequestAsync() error = %v", err)
+	}
+	if _, err := future.Wait(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Future.Wait() error = %v, want deadline exceeded", err)
+	}
+	var launchReq daptest.Request
+	select {
+	case launchReq = <-launchSeen:
+	case <-time.After(2 * time.Second):
+		t.Fatal("launch request was not observed")
+	}
+	if err := adapter.Respond(launchReq, daptest.Payload{Success: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for client.LateResponses() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := client.LateResponses(); got != 1 {
+		t.Errorf("LateResponses() = %d, want 1", got)
+	}
+}
+
+func TestClientRequestAsyncRejectsBadArguments(t *testing.T) {
+	client, _ := newClientPair(t, Options{})
+	if _, err := client.RequestAsync(nil, "launch", nil); !errors.Is(err, ErrNilContext) {
+		t.Errorf("nil context error = %v, want ErrNilContext", err)
+	}
+	if _, err := client.RequestAsync(context.Background(), "", nil); !errors.Is(err, ErrInvalidArgument) {
+		t.Errorf("empty command error = %v, want ErrInvalidArgument", err)
+	}
+	if _, err := client.RequestAsync(context.Background(), "launch", nil); !errors.Is(err, ErrNotInitialized) {
+		t.Errorf("uninitialized error = %v, want ErrNotInitialized", err)
 	}
 }

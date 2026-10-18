@@ -37,7 +37,7 @@ type Capabilities struct {
 	SupportsLogPoints                     bool `json:"supportsLogPoints"`
 	SupportsTerminateThreadsRequest       bool `json:"supportsTerminateThreadsRequest"`
 	SupportsSetExpression                 bool `json:"supportsSetExpression"`
-	SupportsTerminateDebuggee             bool `json:"supportsTerminateDebuggee"`
+	SupportsTerminateDebuggee             bool `json:"supportTerminateDebuggee"`
 	SupportsSuspendDebuggee               bool `json:"supportsSuspendDebuggee"`
 	SupportsBreakpointLocationsRequest    bool `json:"supportsBreakpointLocationsRequest"`
 	SupportsClipboardContext              bool `json:"supportsClipboardContext"`
