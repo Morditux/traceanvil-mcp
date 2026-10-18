@@ -179,6 +179,7 @@ func (d *RunDir) OpenWriter(name string) (*QuotaWriter, error) {
 	}
 	d.mu.Lock()
 	d.streams[name] = true
+	d.sizes[name] = 0
 	d.mu.Unlock()
 	return &QuotaWriter{dir: d, name: name, file: file}, nil
 }
@@ -376,4 +377,99 @@ func randomSuffix(prefix string) (string, error) {
 		return "", fmt.Errorf("artifacts: random: %w", err)
 	}
 	return prefix + hex.EncodeToString(raw[:]), nil
+}
+
+// AdoptedFile describes a file that an external process wrote directly into the
+// run directory and that was then charged against the run quota.
+type AdoptedFile struct {
+	Name      string
+	Bytes     int64
+	Truncated bool
+}
+
+// Adopt accounts for a file produced by an external process (for example
+// Valgrind's XML output). The file must already exist, must not be a symlink and
+// must be a regular file. It is truncated to limit and to the remaining per-run
+// byte budget (a negative limit means no bytes may be kept; zero means no
+// caller limit), chmodded 0600 and charged against the quota. Truncation is
+// reported, never hidden: callers must treat it as partial evidence.
+func (d *RunDir) Adopt(name string, limit int64) (AdoptedFile, error) {
+	path, err := d.safePath(name)
+	if err != nil {
+		return AdoptedFile{}, err
+	}
+
+	file, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return AdoptedFile{}, fmt.Errorf("artifacts: adopt %q: %w", name, err)
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return AdoptedFile{}, fmt.Errorf("artifacts: adopt %q: %w", name, err)
+	}
+	if !info.Mode().IsRegular() {
+		return AdoptedFile{}, fmt.Errorf("artifacts: adopt %q: not a regular file", name)
+	}
+
+	d.mu.Lock()
+	previous, tracked := d.sizes[name]
+	remaining := d.maxBytes - (d.written - previous)
+	isNew := !tracked
+	fileCount := d.files
+	d.mu.Unlock()
+
+	if isNew && fileCount >= d.maxFiles {
+		return AdoptedFile{}, ErrFileQuota
+	}
+
+	size := info.Size()
+	allowed := limit
+	if allowed == 0 || allowed > d.maxBytes {
+		allowed = d.maxBytes
+	}
+	if allowed > remaining {
+		allowed = remaining
+	}
+	if allowed < 0 {
+		allowed = 0
+	}
+	truncated := false
+	if size > allowed {
+		if err := file.Truncate(allowed); err != nil {
+			return AdoptedFile{}, fmt.Errorf("artifacts: truncate adopted %q: %w", name, err)
+		}
+		if err := file.Sync(); err != nil {
+			return AdoptedFile{}, fmt.Errorf("artifacts: sync adopted %q: %w", name, err)
+		}
+		size = allowed
+		truncated = true
+	}
+	if err := file.Chmod(0o600); err != nil {
+		return AdoptedFile{}, fmt.Errorf("artifacts: secure adopted %q: %w", name, err)
+	}
+
+	d.mu.Lock()
+	d.written += size - previous
+	d.sizes[name] = size
+	if isNew {
+		d.files++
+	}
+	d.mu.Unlock()
+
+	return AdoptedFile{Name: name, Bytes: size, Truncated: truncated}, nil
+}
+
+// Owns reports whether path is a direct run directory of this store. It does
+// not stat the directory; callers that need existence must check separately.
+func (s *Store) Owns(path string) bool {
+	if path == "" || !filepath.IsAbs(path) {
+		return false
+	}
+	clean := filepath.Clean(path)
+	if filepath.Dir(clean) != s.root {
+		return false
+	}
+	return runIDPattern.MatchString(filepath.Base(clean))
 }

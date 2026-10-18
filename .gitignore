@@ -40,3 +40,10 @@ go.work.sum
 
 # Local configuration derived from config.example.json.
 /config.local.json
+
+# Local build cache and scratch experiments
+/.gocache/
+/.scratch/
+
+# Locally built test fixtures
+/testdata/fixtures/c/build/

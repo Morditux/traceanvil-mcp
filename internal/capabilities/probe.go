@@ -45,6 +45,10 @@ type BinaryProbe struct {
 	features  []string
 	note      string
 	noVersion bool
+
+	checkArgs     []string
+	checkContains []string
+	checkNote     string
 }
 
 // NewBinaryProbe returns a probe for one external executable.
@@ -68,6 +72,16 @@ func (p *BinaryProbe) WithNote(note string) *BinaryProbe {
 // for adapters such as lldb-dap whose --version behaviour is not guaranteed.
 func (p *BinaryProbe) WithoutVersionProbe() *BinaryProbe {
 	p.noVersion = true
+	return p
+}
+
+// WithFunctionalCheck verifies a feature without running a user program. The
+// binary is executed with a fixed argument list and every required substring
+// must appear in its output. Success promotes the capability to available;
+// failure reports unsupported (or unknown for infrastructure failures).
+func (p *BinaryProbe) WithFunctionalCheck(args []string, required []string) *BinaryProbe {
+	p.checkArgs = append([]string(nil), args...)
+	p.checkContains = append([]string(nil), required...)
 	return p
 }
 
@@ -135,13 +149,83 @@ func (p *BinaryProbe) Run(ctx context.Context) Result {
 		}
 	}
 
+	if len(p.checkArgs) == 0 {
+		return Result{
+			State:   StateUnknown,
+			Path:    resolved,
+			Version: version,
+			Reason:  discoveryReason("binary detected; functional support not verified", p.note),
+			OK:      true,
+		}
+	}
+
+	detail, err := functionalCheck(ctx, resolved, p.checkArgs, p.checkContains)
+	if err != nil {
+		// Only a definite negative answer (non-zero exit or missing required
+		// output) proves lack of support; start failures and other
+		// infrastructure errors leave the state unknown.
+		state := StateUnknown
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) || errors.Is(err, errMissingOutput) {
+			state = StateUnsupported
+		}
+		if ctx.Err() != nil {
+			state = StateUnknown
+		}
+		return Result{
+			State:   state,
+			Path:    resolved,
+			Version: version,
+			Reason:  fmt.Sprintf("binary found but functional check failed: %v", err),
+			Detail:  detail,
+			OK:      ctx.Err() == nil,
+		}
+	}
+
 	return Result{
-		State:   StateUnknown,
+		State:   StateAvailable,
 		Path:    resolved,
 		Version: version,
-		Reason:  discoveryReason("binary detected; functional support not verified", p.note),
+		Reason:  discoveryReason("binary and requested feature verified", p.note),
+		Detail:  detail,
 		OK:      true,
 	}
+}
+
+// functionalCheck runs one fixed, bounded command and verifies required
+// substrings in its combined output. It never runs a user program.
+func functionalCheck(ctx context.Context, path string, args, required []string) (string, error) {
+	cmd := exec.CommandContext(ctx, path, args...)
+	cmd.Env = []string{"PATH=/usr/local/bin:/usr/bin:/bin", "LC_ALL=C", "LANG=C"}
+	cmd.WaitDelay = 250 * time.Millisecond
+
+	stdout := &boundedBuffer{limit: probeOutputLimit}
+	stderr := &boundedBuffer{limit: probeOutputLimit}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+
+	err := cmd.Run()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return "", ctxErr
+	}
+	if err != nil {
+		detail := firstLine(stderr.String())
+		if detail == "" {
+			detail = firstLine(stdout.String())
+		}
+		if detail == "" {
+			return "", err
+		}
+		return detail, fmt.Errorf("%w: %s", err, detail)
+	}
+
+	combined := stdout.String() + "\n" + stderr.String()
+	for _, expected := range required {
+		if !strings.Contains(combined, expected) {
+			return "missing " + expected, fmt.Errorf("%w: %q", errMissingOutput, expected)
+		}
+	}
+	return truncate(firstLine(combined), versionMaxLength), nil
 }
 
 func discoveryReason(base, note string) string {
@@ -151,8 +235,10 @@ func discoveryReason(base, note string) string {
 	return base + " (" + note + ")"
 }
 
+var errMissingOutput = errors.New("output does not contain required text")
+
 const (
-	probeOutputLimit = 4096
+	probeOutputLimit = 64 << 10
 	versionMaxLength = 200
 )
 
@@ -160,7 +246,7 @@ func binaryVersion(ctx context.Context, path string) (string, error) {
 	cmd := exec.CommandContext(ctx, path, "--version")
 	// A deterministic, minimal environment avoids locale-dependent output and
 	// avoids inheriting unrelated secrets.
-	cmd.Env = []string{"LC_ALL=C", "LANG=C"}
+	cmd.Env = []string{"PATH=/usr/local/bin:/usr/bin:/bin", "LC_ALL=C", "LANG=C"}
 	// Bound the I/O wait even if a grandchild process keeps the pipes open after
 	// the probe context expires.
 	cmd.WaitDelay = 250 * time.Millisecond

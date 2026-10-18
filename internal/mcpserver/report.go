@@ -89,8 +89,8 @@ func (s *Server) BuildReport() Report {
 
 func (s *Server) warnings() []string {
 	warnings := []string{
-		"Only system_capabilities is implemented at this milestone; no analysis tool is exposed.",
-		"Backend records reflect executable discovery only; functional probes arrive with J3 (Valgrind), J6 (GDB) and J7 (LLDB).",
+		"Only system_capabilities is implemented at this milestone; analysis tools arrive with J4.",
+		"Valgrind is functionally probed for Memcheck XML support; GDB and LLDB remain discovery-only (J6/J7).",
 		"Capability probes run at startup only; restart the server after installing or removing a backend.",
 	}
 

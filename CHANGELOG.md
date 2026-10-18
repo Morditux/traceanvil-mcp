@@ -30,12 +30,39 @@ released yet; milestones map to the development plan.
   process leaks.
 - J2: integration test covering policy → runner → artifacts → jobs.
 - J2: ADR 0005 on execution, artifacts and job lifecycle.
+- J3: canonical diagnostic model, path normalization and fingerprint v1
+  (`internal/diagnostic`, `schema_version = 1`).
+- J3: allowlisted Memcheck argument builder and strict option validation.
+- J3: bounded streaming Valgrind XML parser (bytes, depth, diagnostics, frames,
+  strings, suppressions) that keeps partial evidence and marks truncation.
+- J3: Memcheck analysis service with private run directories, raw XML watchdog,
+  quota adoption, exit-code classification and atomic `analysis.json`.
+- J3: leak, still-reachable and suppression reporting without reclassifying
+  suppressed errors as resolved.
+- J3: functional Valgrind capability probe (`--version` plus
+  `--tool=memcheck --help`), without running a user program.
+- J3: `valgrind.suppressions` configuration profiles, confined to workspace
+  roots and revalidated at invocation.
+- J3: `RunDir.Adopt` artifact quota support and `jobs.Manager.StartInDir` for
+  backends that must allocate files before launch.
+- J3: C fixture corpus, static XML fixtures, parser fuzz seeds and real-Valgrind
+  integration tests (invalid read/write, use-after-free, double free,
+  uninitialised value, leaks, clean exit, SIGSEGV, timeout, cancellation,
+  truncated XML, suppressions).
+- J3: ADR 0006 and `docs/valgrind.md` on the pipeline, parser limits, report
+  schema and limitations.
 
 ### Changed
 
 - J1: `version` now marks binaries built from a modified checkout with `-dirty`.
 - J1: `cli.Run` takes a context and explicit stdin/stdout/stderr for testability.
 - J2: no new MCP tool or CLI command; execution is internal until J4.
+- J3: `backend.valgrind` becomes `available` when the functional Memcheck/XML
+  probe succeeds; GDB and LLDB remain discovery-only.
+- J3: no new MCP tool or CLI command; Memcheck is internal until J4.
+- J3: `system_capabilities` warnings and documentation now describe the J3
+  state; the compatibility inventory was refreshed (Valgrind 3.26.0, LLDB/Clang
+  21.1.8).
 
 ### Security
 
@@ -44,6 +71,14 @@ released yet; milestones map to the development plan.
   probes are implemented.
 - J2: executed targets never inherit the server environment or stdin; artifacts
   are private, symlink-safe and quota-bounded.
+- J3: Valgrind XML is treated as untrusted input with byte/depth/record/string
+  bounds; truncation and parse failures can never produce "no errors".
+- J3: raw XML is adopted with `O_NOFOLLOW`, truncated to the quota and mode
+  `0600`; `analysis.json` is written atomically.
+- J3: suppression profiles are configuration-only, workspace-confined and
+  revalidated at invocation; suppressed errors are never "resolved".
+- J3: `trace_children=true` is rejected until child XML documents are collected
+  and attributed.
 
 ## 0.0.0 — 2026-10-18
 

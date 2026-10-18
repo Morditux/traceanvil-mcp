@@ -458,3 +458,85 @@ func TestManagerEvictsOldestFinishedJobs(t *testing.T) {
 		}
 	}
 }
+
+func TestManagerStartInDir(t *testing.T) {
+	fake := &fakeRunner{runFunc: func(_ context.Context, req runner.Request) (runner.Result, error) {
+		return runner.Result{Started: true, ExitCode: 0}, nil
+	}}
+	manager, store := newTestManager(t, fake, Options{MaxJobs: 1, Timeout: time.Second, MaxOutputBytes: 4096})
+	runDir, err := store.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	job, err := manager.StartInDir(context.Background(), runDir, testSpec(t))
+	if err != nil {
+		t.Fatalf("StartInDir() error = %v", err)
+	}
+	if job.ID() != runDir.ID() {
+		t.Errorf("job id = %q, want the supplied run dir %q", job.ID(), runDir.ID())
+	}
+	snapshot := waitJob(t, job)
+	if snapshot.State != StateCompleted {
+		t.Errorf("State = %q, want completed", snapshot.State)
+	}
+	if _, err := os.Stat(filepath.Join(runDir.Path(), "result.json")); err != nil {
+		t.Errorf("result.json missing from the supplied run dir: %v", err)
+	}
+}
+
+func TestManagerStartInDirRejectsForeignDirectory(t *testing.T) {
+	fake := &fakeRunner{runFunc: func(context.Context, runner.Request) (runner.Result, error) {
+		return runner.Result{Started: true}, nil
+	}}
+	manager, _ := newTestManager(t, fake, Options{MaxJobs: 1, Timeout: time.Second, MaxOutputBytes: 4096})
+	otherStore, err := artifacts.NewStore(filepath.Join(t.TempDir(), "other"), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := otherStore.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := manager.StartInDir(context.Background(), foreign, testSpec(t)); err == nil {
+		t.Fatal("StartInDir() accepted a directory from another store")
+	}
+	if _, err := manager.StartInDir(context.Background(), nil, testSpec(t)); err == nil {
+		t.Fatal("StartInDir() accepted a nil directory")
+	}
+}
+
+func TestManagerStartInDirRespectsQuota(t *testing.T) {
+	release := make(chan struct{})
+	fake := &fakeRunner{runFunc: func(ctx context.Context, _ runner.Request) (runner.Result, error) {
+		select {
+		case <-release:
+			return runner.Result{Started: true}, nil
+		case <-ctx.Done():
+			return runner.Result{Started: true, Canceled: true}, nil
+		}
+	}}
+	manager, store := newTestManager(t, fake, Options{MaxJobs: 1, Timeout: time.Second, MaxOutputBytes: 4096})
+
+	first, err := store.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.StartInDir(context.Background(), first, testSpec(t)); err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.StartInDir(context.Background(), second, testSpec(t)); err == nil {
+		t.Fatal("StartInDir() accepted a job beyond max_jobs")
+	} else {
+		var limit *LimitError
+		if !errors.As(err, &limit) {
+			t.Fatalf("StartInDir() error = %T %v, want LimitError", err, err)
+		}
+	}
+	close(release)
+}

@@ -19,8 +19,11 @@ later milestones. The server advertises `tools.listChanged = true` and emits
 `notifications/tools/list_changed` when the list changes. Clients that do not
 refresh dynamically must reconnect.
 
-At J2 only one tool is implemented: `system_capabilities`. It is always
-available and read-only.
+At J3 only one tool is implemented: `system_capabilities`. It is always
+available and read-only. The Memcheck pipeline exists internally and writes
+`analysis.json`/`memcheck.xml`, but `analysis_start`, `analysis_status`,
+`analysis_report` and `analysis_artifact` are J4 work and must not appear in
+`tools/list` yet.
 
 ## `system_capabilities`
 
@@ -57,6 +60,22 @@ available and read-only.
   },
   "capabilities": [
     {
+      "id": "backend.valgrind",
+      "kind": "backend",
+      "backend": "valgrind",
+      "state": "available",
+      "path": "/usr/bin/valgrind",
+      "version": "valgrind-3.26.0",
+      "features": ["memcheck", "xml-output", "suppressions"],
+      "reason": "binary and requested feature verified (Memcheck tool and XML options verified from help output; every run revalidates the binary)",
+      "last_checked": "2026-10-18T12:00:00Z",
+      "probe": {
+        "attempted": true,
+        "success": true,
+        "duration_ms": 18
+      }
+    },
+    {
       "id": "backend.gdb",
       "kind": "backend",
       "backend": "gdb",
@@ -64,7 +83,7 @@ available and read-only.
       "path": "/usr/bin/gdb",
       "version": "GNU gdb (Ubuntu 17.1-2ubuntu1) 17.1",
       "reason": "binary detected; functional support not verified (DAP probe planned for J6)",
-      "last_checked": "2026-10-18T00:50:00Z",
+      "last_checked": "2026-10-18T12:00:00Z",
       "probe": {
         "attempted": true,
         "success": true,
@@ -81,7 +100,9 @@ available and read-only.
     }
   ],
   "warnings": [
-    "Only system_capabilities is implemented at this milestone; no analysis tool is exposed."
+    "Only system_capabilities is implemented at this milestone; analysis tools arrive with J4.",
+    "Valgrind is functionally probed for Memcheck XML support; GDB and LLDB remain discovery-only (J6/J7).",
+    "Capability probes run at startup only; restart the server after installing or removing a backend."
   ]
 }
 ```
@@ -99,9 +120,10 @@ will change only for an incompatible payload change.
 | `unsupported` | Backend present but the feature is not supported. |
 | `unknown` | Could not be verified, including binary-only discovery. |
 
-At J2, external backends are discovery-only and therefore `unknown` when their
-executable exists. This is deliberate: a binary on `PATH` does not prove that
-Memcheck or a DAP session works.
+At J3, Valgrind becomes `available` only after the binary and its Memcheck XML
+options are verified. GDB and LLDB remain discovery-only and therefore `unknown`
+when their executable exists: a binary on `PATH` does not prove that a DAP
+session works.
 
 ### Probe fields
 
@@ -120,4 +142,6 @@ revalidate and return `backend_unavailable` rather than a false "no errors"
 result.
 
 The server never reports "no errors" when a backend is missing or a probe is
-incomplete. At J2 no analysis is performed and no MCP tool launches a target.
+incomplete. At J3 no analysis is performed through MCP and no MCP tool launches
+a target; the internal Memcheck pipeline is reachable only from Go tests until
+J4 wires `analysis_start`.

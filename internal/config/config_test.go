@@ -340,3 +340,72 @@ func ExampleParse() {
 	fmt.Println(cfg.Policy.Profile, cfg.AllowedTargets[0].ID)
 	// Output: safe-default fixture
 }
+
+func TestParseValgrindSuppressions(t *testing.T) {
+	const doc = `{
+		"schema_version": 1,
+		"workspace_roots": ["/tmp/ws"],
+		"report_dir": "/tmp/ws-reports",
+		"allowed_targets": [],
+		"valgrind": {
+			"suppressions": {
+				"addr4": "/tmp/ws/supp/addr4.supp",
+				"hidden-leaks": "/tmp/ws/supp/leaks.supp"
+			}
+		}
+	}`
+	cfg, err := Parse(strings.NewReader(doc))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if got := cfg.Valgrind.Suppressions["addr4"]; got != "/tmp/ws/supp/addr4.supp" {
+		t.Errorf("addr4 = %q", got)
+	}
+	if len(cfg.Valgrind.Suppressions) != 2 {
+		t.Errorf("len(Suppressions) = %d, want 2", len(cfg.Valgrind.Suppressions))
+	}
+}
+
+func TestParseValgrindSuppressionsRejections(t *testing.T) {
+	base := `{
+		"schema_version": 1,
+		"workspace_roots": ["/tmp/ws"],
+		"report_dir": "/tmp/ws-reports",
+		"allowed_targets": [],
+		"valgrind": {"suppressions": {%s}}
+	}`
+	cases := []struct {
+		name  string
+		entry string
+	}{
+		{"outside roots", `"addr4": "/tmp/elsewhere/addr4.supp"`},
+		{"relative path", `"addr4": "supp/addr4.supp"`},
+		{"invalid profile id", `"../escape": "/tmp/ws/addr4.supp"`},
+		{"sensitive path", `"proc": "/proc/self/maps"`},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := Parse(strings.NewReader(fmt.Sprintf(base, test.entry)))
+			if err == nil {
+				t.Fatal("Parse() accepted an invalid suppression entry")
+			}
+		})
+	}
+}
+
+func TestParseValgrindSuppressionsCardinality(t *testing.T) {
+	entries := make([]string, 0, MaxSuppressionProfiles+1)
+	for i := 0; i < MaxSuppressionProfiles+1; i++ {
+		entries = append(entries, fmt.Sprintf(`"profile-%02d": "/tmp/ws/profile-%02d.supp"`, i, i))
+	}
+	doc := fmt.Sprintf(`{
+		"schema_version": 1,
+		"workspace_roots": ["/tmp/ws"],
+		"report_dir": "/tmp/ws-reports",
+		"allowed_targets": [],
+		"valgrind": {"suppressions": {%s}}
+	}`, strings.Join(entries, ","))
+	if _, err := Parse(strings.NewReader(doc)); err == nil {
+		t.Fatal("Parse() accepted too many suppression profiles")
+	}
+}

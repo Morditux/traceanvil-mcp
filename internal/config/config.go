@@ -29,6 +29,9 @@ const (
 	MaxAllowedArgs    = 64
 	MaxArgBytes       = 4096
 	MaxPathBytes      = 4096
+
+	MaxSuppressionProfiles  = 32
+	MaxSuppressionFileBytes = 1 << 20
 )
 
 // Defaults applied when a limit is omitted (zero).
@@ -67,6 +70,14 @@ type Config struct {
 	Backends       Backends `json:"backends"`
 	Policy         Policy   `json:"policy"`
 	Limits         Limits   `json:"limits"`
+	Valgrind       Valgrind `json:"valgrind"`
+}
+
+// Valgrind holds optional Valgrind-specific configuration.
+type Valgrind struct {
+	// Suppressions maps an administrator-defined profile id to a suppression
+	// file. The file is resolved and revalidated at invocation time.
+	Suppressions map[string]string `json:"suppressions,omitempty"`
 }
 
 // Target is an executable the server is allowed to run on request.
@@ -268,7 +279,37 @@ func (c *Config) Validate() error {
 		return fieldError("policy", "attach and evaluate require profile %q", ProfileElevatedLocal)
 	}
 
+	if err := c.validateValgrind(roots); err != nil {
+		return err
+	}
 	return c.validateLimits()
+}
+
+func (c *Config) validateValgrind(roots []string) error {
+	if len(c.Valgrind.Suppressions) > MaxSuppressionProfiles {
+		return fieldError("valgrind.suppressions", "at most %d profiles are allowed", MaxSuppressionProfiles)
+	}
+	if c.Valgrind.Suppressions == nil {
+		return nil
+	}
+	for id, raw := range c.Valgrind.Suppressions {
+		field := "valgrind.suppressions[" + id + "]"
+		if !targetIDPattern.MatchString(id) {
+			return fieldError(field, "profile id must match %s", targetIDPattern)
+		}
+		path, err := normalizePath(field, raw)
+		if err != nil {
+			return err
+		}
+		if err := rejectSensitivePath(field, path); err != nil {
+			return err
+		}
+		if !pathWithinAny(roots, path) {
+			return fieldError(field, "must be inside workspace_roots")
+		}
+		c.Valgrind.Suppressions[id] = path
+	}
+	return nil
 }
 
 func (c *Config) validateLimits() error {

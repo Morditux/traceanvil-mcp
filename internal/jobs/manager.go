@@ -110,38 +110,101 @@ func NewManager(store *artifacts.Store, processRunner Runner, opts Options) (*Ma
 // context only gates admission: the job is bound to the manager lifetime and is
 // stopped by Job.Cancel, its timeout or Close, not by the caller's context.
 func (m *Manager) Start(ctx context.Context, spec Spec) (*Job, error) {
-	if ctx == nil {
-		return nil, errors.New("jobs: nil context")
-	}
-	if err := ctx.Err(); err != nil {
+	if err := validateStart(ctx, spec); err != nil {
 		return nil, err
-	}
-	if spec.TargetID == "" {
-		return nil, errors.New("jobs: target id must not be empty")
-	}
-	if !filepath.IsAbs(spec.Executable) {
-		return nil, errors.New("jobs: executable must be an absolute path")
-	}
-	if !filepath.IsAbs(spec.Dir) {
-		return nil, errors.New("jobs: working directory must be an absolute path")
 	}
 
 	m.mu.Lock()
-	if m.closed {
+	if err := m.admitLocked(); err != nil {
 		m.mu.Unlock()
-		return nil, ErrClosed
+		return nil, err
 	}
-	if m.active >= m.opts.MaxJobs {
-		m.mu.Unlock()
-		return nil, &LimitError{Max: m.opts.MaxJobs}
-	}
-
 	runDir, err := m.store.Create()
 	if err != nil {
 		m.mu.Unlock()
 		return nil, err
 	}
+	job := m.newJobLocked(runDir, spec)
+	m.mu.Unlock()
 
+	jobSpec := cloneSpec(spec)
+	go m.execute(job, runDir, jobSpec)
+	return job, nil
+}
+
+// StartInDir launches one job in a run directory that the caller already
+// created through the manager's artifact store. It exists so a backend can
+// build arguments that reference files inside the run directory (Valgrind XML)
+// before the process starts. The manager keeps owning the manifest and the
+// lifecycle; if admission fails, the caller still owns the directory.
+func (m *Manager) StartInDir(ctx context.Context, runDir *artifacts.RunDir, spec Spec) (*Job, error) {
+	if err := validateStart(ctx, spec); err != nil {
+		return nil, err
+	}
+	if runDir == nil {
+		return nil, errors.New("jobs: nil run directory")
+	}
+	if !m.store.Owns(runDir.Path()) {
+		return nil, errors.New("jobs: run directory does not belong to this manager's store")
+	}
+
+	m.mu.Lock()
+	if err := m.admitLocked(); err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
+	if _, exists := m.jobs[runDir.ID()]; exists {
+		m.mu.Unlock()
+		return nil, errors.New("jobs: run directory already has a job")
+	}
+	job := m.newJobLocked(runDir, spec)
+	m.mu.Unlock()
+
+	jobSpec := cloneSpec(spec)
+	go m.execute(job, runDir, jobSpec)
+	return job, nil
+}
+
+func cloneSpec(spec Spec) Spec {
+	spec.Args = append([]string(nil), spec.Args...)
+	spec.Env = append([]string(nil), spec.Env...)
+	return spec
+}
+
+func validateStart(ctx context.Context, spec Spec) error {
+	if ctx == nil {
+		return errors.New("jobs: nil context")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if spec.TargetID == "" {
+		return errors.New("jobs: target id must not be empty")
+	}
+	if !filepath.IsAbs(spec.Executable) {
+		return errors.New("jobs: executable must be an absolute path")
+	}
+	if !filepath.IsAbs(spec.Dir) {
+		return errors.New("jobs: working directory must be an absolute path")
+	}
+	return nil
+}
+
+// admitLocked checks the manager state and the concurrency quota. The caller
+// holds m.mu.
+func (m *Manager) admitLocked() error {
+	if m.closed {
+		return ErrClosed
+	}
+	if m.active >= m.opts.MaxJobs {
+		return &LimitError{Max: m.opts.MaxJobs}
+	}
+	return nil
+}
+
+// newJobLocked registers a job and reserves its concurrency slot. The caller
+// holds m.mu and must have called admitLocked successfully.
+func (m *Manager) newJobLocked(runDir *artifacts.RunDir, spec Spec) *Job {
 	jobCtx, cancel := context.WithCancel(m.base)
 	job := &Job{
 		runID:     runDir.ID(),
@@ -152,16 +215,10 @@ func (m *Manager) Start(ctx context.Context, spec Spec) (*Job, error) {
 		cancel:    cancel,
 		done:      make(chan struct{}),
 	}
-	jobSpec := spec
-	jobSpec.Args = append([]string(nil), spec.Args...)
-	jobSpec.Env = append([]string(nil), spec.Env...)
 	m.jobs[job.runID] = job
 	m.active++
 	m.wg.Add(1)
-	m.mu.Unlock()
-
-	go m.execute(job, runDir, jobSpec)
-	return job, nil
+	return job
 }
 
 // Get returns a job handle by run id.

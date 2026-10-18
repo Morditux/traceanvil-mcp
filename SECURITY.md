@@ -29,17 +29,29 @@ a fix before public disclosure.
   backend state, exposed tools and warnings. It never launches a program.
 - `doctor` and `validate-config` are local, read-only commands. `doctor` uses
   `stat` for path checks and never executes a target.
-- Startup probes resolve enabled backend executables with `PATH` and run
-  `--version` only, with a 2-second timeout, bounded output and a minimal
-  environment. Relative `PATH` entries are rejected. `lldb-dap` is resolved but
-  not executed. No user program is run.
+- Startup probes resolve enabled backend executables with `PATH`, run
+  `--version`, and for Valgrind additionally run `--tool=memcheck --help` to
+  verify Memcheck/XML option support. Both are bounded (2-second timeout, bounded
+  output, minimal environment). Relative `PATH` entries are rejected.
+  `lldb-dap` is resolved but not executed. No user program is run.
 - No MCP tool launches a target yet. J2 provides an internal runner
-  (`policy` → `runner` → `artifacts` → `jobs`) that is exercised by tests but is
-  not reachable through MCP until `analysis_start` is wired in J4.
+  (`policy` → `runner` → `artifacts` → `jobs`) and J3 adds an internal Memcheck
+  service (`internal/valgrind`), both exercised by tests but not reachable
+  through MCP until `analysis_start` is wired in J4.
 - The internal runner revalidates targets with `EvalSymlinks`, confines program
   and working directory to resolved workspace roots, uses process groups with
   TERM/KILL cleanup, does not inherit the server environment or stdin, and
   bounds stdout/stderr by a shared byte budget.
+- J3 treats Valgrind XML as untrusted: it is parsed token by token with bounds on
+  bytes, depth, diagnostics, frames and string lengths. Truncation, malformed
+  input or quota breaches produce `incomplete`/`tool_error`, never a clean
+  result. Raw XML is adopted with `O_NOFOLLOW`, checked as a regular file,
+  truncated to the run quota and chmodded `0600`.
+- Suppression profiles are configuration-defined, confined to workspace roots,
+  capped at 1 MiB and revalidated with `EvalSymlinks`/`O_NOFOLLOW` at invocation.
+  Suppressed errors are reported as counts and are never called resolved.
+- `trace_children=true` is rejected at J3 because separate child XML documents
+  are not collected or attributed yet.
 
 ## Threat model
 
@@ -93,7 +105,9 @@ These are non-negotiable for every milestone:
   and file-count quotas. Access is scoped to the owning session in later
   milestones.
 - A program exit code is tracked separately from the job state. A timeout, kill
-  or infrastructure failure never becomes a successful "no errors" result.
+  or infrastructure failure never becomes a successful "no errors" result. The
+  `--error-exitcode=42` marker is never treated as proof on its own; XML is
+  authoritative.
 - Analysis completeness is explicit. A timeout, kill, parse failure or quota
   breach sets `analysis_complete=false`; `total=0` with an incomplete analysis
   never means "no bug".
@@ -115,8 +129,13 @@ These are non-negotiable for every milestone:
 - Prefer the `safe-default` profile; opt in to elevated features explicitly.
 - Treat `perf`/ptrace restrictions as expected conditions, not bugs to bypass.
 - Review the raw artifacts retention policy before collecting large reports.
-  J2 enforces per-run quotas only; global retention and disk quotas arrive
+  J2/J3 enforce per-run quotas only; global retention and disk quotas arrive
   later.
+- A target runs as the same OS user as the server and can inspect or modify its
+  run directory, including the raw XML, between writer and parser. The pipeline
+  detects symlink replacement and bounds the file, but it cannot prove evidence
+  integrity against the target. Use a separate account or sandbox for untrusted
+  code.
 - Use a container or cgroup when the target may escape its process group
   (`setsid`) or must be isolated beyond a bounded subprocess.
 - Do not expose the stdio transport through a network wrapper without adding

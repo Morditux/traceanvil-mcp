@@ -203,3 +203,10 @@ func validateArgs(allowed, requested []string) error {
 	}
 	return nil
 }
+
+// ResolvedRoots returns the workspace roots that currently exist and resolve,
+// in configuration order. Analysis layers use them to normalize tool-reported
+// source paths without inventing containment.
+func (r *Resolver) ResolvedRoots() []string {
+	return r.resolvedRoots()
+}

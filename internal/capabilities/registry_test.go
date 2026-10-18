@@ -3,11 +3,14 @@ package capabilities
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/Morditux/traceanvil-mcp/internal/config"
 )
 
 type fakeProbe struct {
@@ -338,5 +341,88 @@ func writeExecutable(t *testing.T, dir, name, content string) {
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte(content), 0o700); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestBinaryProbeFunctionalCheckAvailable(t *testing.T) {
+	dir := t.TempDir()
+	writeExecutable(t, dir, "fake-memcheck", `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "fake-memcheck 1.0"
+  exit 0
+fi
+echo "memcheck cachegrind --xml=yes --error-exitcode --suppressions"
+`)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	registry := NewRegistry([]Probe{
+		NewBinaryProbe("fake", "fake", "fake-memcheck", true, []string{"memcheck"}).
+			WithFunctionalCheck([]string{"--tool=memcheck", "--help"}, []string{"--xml=yes", "--error-exitcode"}),
+	}, time.Second)
+
+	record := registry.Refresh(context.Background())[0]
+	if record.State != StateAvailable {
+		t.Fatalf("State = %q, want available (reason: %s)", record.State, record.Reason)
+	}
+	if !record.Probe.Success {
+		t.Error("Probe.Success = false")
+	}
+	if len(record.Features) != 1 || record.Features[0] != "memcheck" {
+		t.Errorf("Features = %v, want [memcheck]", record.Features)
+	}
+}
+
+func TestBinaryProbeFunctionalCheckUnsupported(t *testing.T) {
+	dir := t.TempDir()
+	writeExecutable(t, dir, "old-memcheck", `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "old-memcheck 0.1"
+  exit 0
+fi
+echo "memcheck only"
+`)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	registry := NewRegistry([]Probe{
+		NewBinaryProbe("fake", "fake", "old-memcheck", true, nil).
+			WithFunctionalCheck([]string{"--tool=memcheck", "--help"}, []string{"--xml=yes"}),
+	}, time.Second)
+
+	record := registry.Refresh(context.Background())[0]
+	if record.State != StateUnsupported {
+		t.Errorf("State = %q, want unsupported (reason: %s)", record.State, record.Reason)
+	}
+	if !record.Probe.Success {
+		t.Error("Probe.Success = false, want the probe mechanism itself to be reported as completed")
+	}
+}
+
+func TestConfigProbesValidateRealValgrind(t *testing.T) {
+	path, err := exec.LookPath("valgrind")
+	if err != nil {
+		t.Skip("valgrind is not installed")
+	}
+	if !filepath.IsAbs(path) {
+		t.Skipf("valgrind resolved through a relative PATH entry: %q", path)
+	}
+
+	cfg := &config.Config{Backends: config.Backends{Valgrind: true}}
+	registry := NewRegistry(NewConfigProbes(cfg), 5*time.Second)
+	records := registry.Refresh(context.Background())
+	var record Capability
+	for _, candidate := range records {
+		if candidate.ID == BackendValgrind {
+			record = candidate
+		}
+	}
+	if record.ID != BackendValgrind {
+		t.Fatalf("backend %q not found in %+v", BackendValgrind, records)
+	}
+	if record.State != StateAvailable {
+		t.Fatalf("State = %q, want available (reason: %s, detail: %s)",
+			record.State, record.Reason, record.Probe.Detail)
+	}
+	if !strings.Contains(record.Version, "valgrind") {
+		t.Errorf("Version = %q, want a Valgrind version", record.Version)
 	}
 }
