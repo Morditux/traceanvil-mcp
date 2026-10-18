@@ -1,6 +1,7 @@
-# If you prefer the allow list template instead of the deny list, see community template:
-# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
+# Compiled server binary (repository root) and local build output
+/mcp-native-diagnostics
+/build/
+
 # Binaries for programs and plugins
 *.exe
 *.exe~
@@ -31,3 +32,8 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Local specification and agent documents: never committed.
+/AGENTS.md
+/INSTALL-UBUNTU.md
+/PLAN.md
