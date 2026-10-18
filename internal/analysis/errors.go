@@ -39,6 +39,11 @@ const (
 	CodeReportInvalid ErrorCode = "report_invalid"
 	// CodeReportTooLarge means the stored report exceeds the API read bound.
 	CodeReportTooLarge ErrorCode = "report_too_large"
+	// CodeIncompatibleRuns means two reports differ in a way that makes an
+	// honest diagnostic comparison impossible.
+	CodeIncompatibleRuns ErrorCode = "incompatible_runs"
+	// CodeDiffTooLarge means one diff item exceeds the response byte bound.
+	CodeDiffTooLarge ErrorCode = "diff_too_large"
 	// CodeArtifactUnavailable means the requested artifact is missing or was
 	// rejected by the artifact store.
 	CodeArtifactUnavailable ErrorCode = "artifact_unavailable"

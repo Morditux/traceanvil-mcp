@@ -294,3 +294,29 @@ func optionReason(err error) string {
 	}
 	return err.Error()
 }
+
+// DiffSchemaVersion versions the diagnostics_diff payload.
+const DiffSchemaVersion = 1
+
+// DiffRequest asks for a bounded comparison of two persisted reports. The base
+// run is the older/reference run; the target run is the newer/candidate run.
+type DiffRequest struct {
+	BaseRunID   string `json:"base_run_id" jsonschema:"opaque base run id"`
+	TargetRunID string `json:"target_run_id" jsonschema:"opaque target run id"`
+	Cursor      string `json:"cursor,omitempty" jsonschema:"opaque next_cursor returned by a previous diff page"`
+	Limit       int    `json:"limit,omitempty" jsonschema:"page size; clamped to limits.max_response_items and the server page cap"`
+}
+
+// DiffResult is one bounded page of a diagnostic comparison. Compatibility
+// changes are reported separately from item classification; when they are not
+// empty, affected items are classified uncertain rather than new/resolved.
+type DiffResult struct {
+	SchemaVersion int                      `json:"schema_version"`
+	BaseRunID     string                   `json:"base_run_id"`
+	TargetRunID   string                   `json:"target_run_id"`
+	Compatibility diagnostic.Compatibility `json:"compatibility"`
+	Summary       diagnostic.DiffSummary   `json:"summary"`
+	Page          PageInfo                 `json:"page"`
+	Items         []diagnostic.DiffItem    `json:"items"`
+	Warnings      []string                 `json:"warnings"`
+}

@@ -35,7 +35,10 @@ type reportHeader struct {
 	Result             diagnostic.Result
 	AnalysisComplete   bool
 	Program            diagnostic.Program
+	Metadata           diagnostic.Metadata
+	Options            map[string]any
 	Summary            diagnostic.Summary
+	Suppressions       []diagnostic.Suppression
 	Artifacts          []diagnostic.Artifact
 	Warnings           []string
 	WarningsTruncated  bool
@@ -148,6 +151,18 @@ func readReport(ctx context.Context, reader io.Reader, size int64, opts reportRe
 		case "program":
 			if err := dec.Decode(&result.Header.Program); err != nil {
 				return reportReadResult{}, Wrap(CodeReportInvalid, err, "decode program")
+			}
+		case "metadata":
+			if err := dec.Decode(&result.Header.Metadata); err != nil {
+				return reportReadResult{}, Wrap(CodeReportInvalid, err, "decode metadata")
+			}
+		case "options":
+			if err := dec.Decode(&result.Header.Options); err != nil {
+				return reportReadResult{}, Wrap(CodeReportInvalid, err, "decode options")
+			}
+		case "suppressions":
+			if err := dec.Decode(&result.Header.Suppressions); err != nil {
+				return reportReadResult{}, Wrap(CodeReportInvalid, err, "decode suppressions")
 			}
 		case "summary":
 			if err := dec.Decode(&result.Header.Summary); err != nil {
@@ -500,8 +515,12 @@ func validateStoredDiagnostic(item diagnostic.Diagnostic) error {
 	if item.Confidence != diagnostic.ConfidenceToolReported && item.Confidence != diagnostic.ConfidenceInference {
 		return Errorf(CodeReportInvalid, "diagnostic %q has an invalid confidence %q", item.ID, item.Confidence)
 	}
-	if !strings.HasPrefix(item.Fingerprint, "sha256:") {
-		return Errorf(CodeReportInvalid, "diagnostic %q has no sha256 fingerprint", item.ID)
+	if !strings.HasPrefix(item.Fingerprint, "sha256:") || len(item.Fingerprint) > 128 {
+		return Errorf(CodeReportInvalid, "diagnostic %q has no bounded sha256 fingerprint", item.ID)
+	}
+	if !diagnostic.ValidFingerprintAlgorithm(item.FingerprintAlgorithm) {
+		return Errorf(CodeReportInvalid, "diagnostic %q has unsupported fingerprint algorithm %q",
+			item.ID, item.FingerprintAlgorithm)
 	}
 	if item.Occurrences < 1 || item.Occurrences > maxReportOccurrences {
 		return Errorf(CodeReportInvalid,

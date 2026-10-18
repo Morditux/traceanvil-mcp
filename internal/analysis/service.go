@@ -153,6 +153,7 @@ type Service struct {
 
 	cache     *reportCache
 	loadSlots chan struct{}
+	diffSlots chan struct{}
 
 	mu     sync.Mutex
 	closed bool
@@ -220,6 +221,7 @@ func New(opts Options) (*Service, error) {
 		maxReportBytes:       opts.MaxReportBytes,
 		cache:                cache,
 		loadSlots:            make(chan struct{}, maxConcurrentReportLoads),
+		diffSlots:            make(chan struct{}, 1),
 	}, nil
 }
 

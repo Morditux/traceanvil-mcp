@@ -13,9 +13,17 @@ import (
 // SchemaVersion versions the canonical report and diagnostic payloads.
 const SchemaVersion = 1
 
-// FingerprintAlgorithmV1 identifies the fingerprint recipe implemented by this
-// package. Changing the recipe requires a new identifier.
-const FingerprintAlgorithmV1 = "sha256-v1"
+// Fingerprint algorithms are versioned recipes. New reports use v2; v1 remains
+// readable so persisted reports can be compared only with the same recipe.
+const (
+	FingerprintAlgorithmV1 = "sha256-v1"
+	FingerprintAlgorithmV2 = "sha256-v2"
+)
+
+// ValidFingerprintAlgorithm reports whether this build understands algorithm.
+func ValidFingerprintAlgorithm(algorithm string) bool {
+	return algorithm == FingerprintAlgorithmV1 || algorithm == FingerprintAlgorithmV2
+}
 
 // Result classifies the analysis outcome independently of the job state.
 type Result string
@@ -227,6 +235,9 @@ func (r Report) Validate() error {
 	if r.Result == ResultErrorsFound && r.Summary.Total == 0 {
 		return errors.New("diagnostic: errors_found requires a positive total")
 	}
+	if r.Metadata.FingerprintAlgorithm != "" && !ValidFingerprintAlgorithm(r.Metadata.FingerprintAlgorithm) {
+		return fmt.Errorf("diagnostic: metadata fingerprint_algorithm %q is unknown", r.Metadata.FingerprintAlgorithm)
+	}
 	if r.AnalysisComplete && r.Summary.Total < len(r.Diagnostics) {
 		return errors.New("diagnostic: complete report total cannot be lower than the record count")
 	}
@@ -249,8 +260,15 @@ func (r Report) Validate() error {
 		if d.Confidence != ConfidenceToolReported && d.Confidence != ConfidenceInference {
 			return fmt.Errorf("diagnostic: diagnostics[%d].confidence %q is invalid", i, d.Confidence)
 		}
-		if !strings.HasPrefix(d.Fingerprint, "sha256:") {
-			return fmt.Errorf("diagnostic: diagnostics[%d].fingerprint must be a sha256 digest", i)
+		if !strings.HasPrefix(d.Fingerprint, "sha256:") || len(d.Fingerprint) > 128 {
+			return fmt.Errorf("diagnostic: diagnostics[%d].fingerprint must be a bounded sha256 digest", i)
+		}
+		if !ValidFingerprintAlgorithm(d.FingerprintAlgorithm) {
+			return fmt.Errorf("diagnostic: diagnostics[%d].fingerprint_algorithm %q is unknown", i, d.FingerprintAlgorithm)
+		}
+		if r.Metadata.FingerprintAlgorithm != "" && d.FingerprintAlgorithm != r.Metadata.FingerprintAlgorithm {
+			return fmt.Errorf("diagnostic: diagnostics[%d] fingerprint_algorithm %q differs from metadata %q",
+				i, d.FingerprintAlgorithm, r.Metadata.FingerprintAlgorithm)
 		}
 		if d.Occurrences < 1 {
 			return fmt.Errorf("diagnostic: diagnostics[%d].occurrences must be positive", i)

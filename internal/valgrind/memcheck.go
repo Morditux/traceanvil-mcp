@@ -48,7 +48,7 @@ func BuildReport(in BuildInput) diagnostic.Report {
 			OS:                   osName(),
 			Arch:                 archName(),
 			WorkspaceRoots:       append([]string(nil), in.Roots...),
-			FingerprintAlgorithm: diagnostic.FingerprintAlgorithmV1,
+			FingerprintAlgorithm: diagnostic.FingerprintAlgorithmV2,
 			ParserVersion:        ParserVersion,
 		},
 		Artifacts:   append([]diagnostic.Artifact(nil), in.Artifacts...),
@@ -107,8 +107,8 @@ func BuildReport(in BuildInput) diagnostic.Report {
 
 		report.Diagnostics = append(report.Diagnostics, diagnostic.Diagnostic{
 			ID:                   diagnosticID(in.RunID, index),
-			Fingerprint:          diagnostic.FingerprintV1(Origin, kind, stack),
-			FingerprintAlgorithm: diagnostic.FingerprintAlgorithmV1,
+			Fingerprint:          diagnostic.FingerprintV2(Origin, kind, stack),
+			FingerprintAlgorithm: diagnostic.FingerprintAlgorithmV2,
 			Origin:               Origin,
 			Kind:                 kind,
 			Severity:             severityForKind(kind),

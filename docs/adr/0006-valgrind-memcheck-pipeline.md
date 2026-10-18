@@ -98,6 +98,8 @@ truncated document must never be interpreted as "no errors".
   (`function`, normalized path, line). Addresses, PIDs, TIDs, run ids and
   absolute temporary paths do not participate. Fingerprints are versioned and
   are not a proof of identity.
+- J8 addendum: new reports use v2, which length-prefixes fields and omits source
+  lines. v1 remains readable for matching persisted reports; see ADR 0011.
 - Severity is a documented policy, not tool truth: Memcheck memory errors and
   definitely/indirectly lost leaks are `error`; possibly lost is `warning`;
   still reachable is `info`. Unknown kinds are `warning` and keep their raw

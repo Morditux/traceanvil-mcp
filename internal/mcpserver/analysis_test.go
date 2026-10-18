@@ -267,6 +267,30 @@ func TestAnalysisToolSchemasAreStrict(t *testing.T) {
 	if report.OutputSchema == nil {
 		t.Error("analysis_report has no output schema")
 	}
+
+	diff, ok := found["diagnostics_diff"]
+	if !ok {
+		t.Fatal("diagnostics_diff is not published")
+	}
+	if diff.Annotations == nil || !diff.Annotations.ReadOnlyHint {
+		t.Error("diagnostics_diff must be marked read-only")
+	}
+	diffSchema, ok := diff.InputSchema.(map[string]any)
+	if !ok {
+		t.Fatalf("diagnostics_diff input schema type = %T", diff.InputSchema)
+	}
+	diffProperties, ok := diffSchema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("diagnostics_diff properties = %T", diffSchema["properties"])
+	}
+	for _, field := range []string{"base_run_id", "target_run_id", "cursor", "limit"} {
+		if _, ok := diffProperties[field]; !ok {
+			t.Errorf("diagnostics_diff schema is missing %q", field)
+		}
+	}
+	if diff.OutputSchema == nil {
+		t.Error("diagnostics_diff has no output schema")
+	}
 }
 
 func TestAnalysisToolsCallAndNamedErrors(t *testing.T) {
@@ -400,7 +424,7 @@ func TestAnalysisReportAndArtifactThroughMCP(t *testing.T) {
 	report := diagnostic.Report{
 		SchemaVersion:    diagnostic.SchemaVersion,
 		RunID:            runDir.ID(),
-		Tool:             diagnostic.Tool{Name: "valgrind", Version: "valgrind-3.26.0"},
+		Tool:             diagnostic.Tool{Name: "valgrind", Path: "/usr/bin/valgrind", Version: "valgrind-3.26.0"},
 		Result:           diagnostic.ResultErrorsFound,
 		AnalysisComplete: true,
 		Program:          diagnostic.Program{TargetID: "fixture", Args: []string{}, ExitCode: 42},
@@ -512,4 +536,103 @@ func toolText(result *mcp.CallToolResult) string {
 		}
 	}
 	return builder.String()
+}
+
+func mcpDiffReport(runID string, id, fingerprint string) diagnostic.Report {
+	return diagnostic.Report{
+		SchemaVersion:    diagnostic.SchemaVersion,
+		RunID:            runID,
+		Tool:             diagnostic.Tool{Name: "valgrind", Path: "/usr/bin/valgrind", Version: "valgrind-3.26.0"},
+		Result:           diagnostic.ResultErrorsFound,
+		AnalysisComplete: true,
+		Program: diagnostic.Program{
+			TargetID: "fixture", Path: "/workspace/fixture",
+			SHA256: "sha256:" + strings.Repeat("cd", 32), Args: []string{}, ExitCode: 42,
+		},
+		Metadata: diagnostic.Metadata{
+			OS: "linux", Arch: "amd64", WorkspaceRoots: []string{"/workspace"},
+			FingerprintAlgorithm: diagnostic.FingerprintAlgorithmV2, ParserVersion: "1",
+		},
+		Options: map[string]any{"leak_check": "full"},
+		Summary: diagnostic.BuildSummary([]diagnostic.Diagnostic{{
+			ID: id, Fingerprint: "sha256:" + strings.Repeat(fingerprint, 32),
+			FingerprintAlgorithm: diagnostic.FingerprintAlgorithmV2, Origin: valgrind.Origin,
+			Kind: "InvalidRead", Severity: diagnostic.SeverityError, Message: "Invalid read",
+			Occurrences: 1, Evidence: diagnostic.Evidence{Artifact: valgrind.RawArtifactName},
+			Confidence: diagnostic.ConfidenceToolReported,
+		}}, nil, false),
+		Diagnostics: []diagnostic.Diagnostic{{
+			ID: id, Fingerprint: "sha256:" + strings.Repeat(fingerprint, 32),
+			FingerprintAlgorithm: diagnostic.FingerprintAlgorithmV2, Origin: valgrind.Origin,
+			Kind: "InvalidRead", Severity: diagnostic.SeverityError, Message: "Invalid read",
+			Occurrences: 1, Evidence: diagnostic.Evidence{Artifact: valgrind.RawArtifactName},
+			Confidence: diagnostic.ConfidenceToolReported,
+		}},
+		Artifacts: []diagnostic.Artifact{},
+		Warnings:  []string{},
+	}
+}
+
+func writeMCPDiffReport(t *testing.T, store *artifacts.Store, report diagnostic.Report) string {
+	t.Helper()
+	runDir, err := store.Create()
+	if err != nil {
+		t.Fatal(err)
+	}
+	report.RunID = runDir.ID()
+	data, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runDir.WriteFileAtomic(valgrind.AnalysisArtifactName, data); err != nil {
+		t.Fatal(err)
+	}
+	return runDir.ID()
+}
+
+func TestDiagnosticsDiffTool(t *testing.T) {
+	store, err := artifacts.NewStore(t.TempDir(), 8<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := newStubBackend()
+	service, err := analysis.New(analysis.Options{Store: store, Backend: backend, BackendEnabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(service.Close)
+	registry := capabilities.NewRegistry(nil, time.Second)
+	if err := registry.Set(capabilities.Capability{
+		ID: capabilities.BackendValgrind, Kind: "backend", Backend: "valgrind",
+		State: capabilities.StateAvailable, Path: "/usr/bin/valgrind",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server := New(testConfig(), registry, version.Current(), nil)
+	for _, definition := range AnalysisDefinitions(service) {
+		if err := server.Register(definition); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server.SyncTools()
+	baseID := writeMCPDiffReport(t, store, mcpDiffReport("", "base", "aa"))
+	targetID := writeMCPDiffReport(t, store, mcpDiffReport("", "target", "aa"))
+	session, ctx := connect(t, server, nil)
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "diagnostics_diff",
+		Arguments: map[string]any{
+			"base_run_id": baseID, "target_run_id": targetID,
+		},
+	})
+	if err != nil || result.IsError {
+		t.Fatalf("diagnostics_diff = %+v, %v", result, err)
+	}
+	var diff analysis.DiffResult
+	decodeCall(t, result, &diff)
+	if diff.Summary.Persistent != 1 || diff.Summary.New != 0 || diff.Summary.Resolved != 0 {
+		t.Fatalf("diff = %+v", diff)
+	}
+	if len(diff.Items) != 1 || diff.Items[0].Change != diagnostic.ChangePersistent {
+		t.Fatalf("items = %+v", diff.Items)
+	}
 }

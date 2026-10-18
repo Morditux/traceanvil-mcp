@@ -21,7 +21,7 @@ Use GitHub's private vulnerability reporting on this repository
 You will receive an acknowledgement and a remediation plan. Please allow time for
 a fix before public disclosure.
 
-## Current surface (J7)
+## Current surface (J8)
 
 - `serve` starts an MCP server over stdin/stdout. stdout carries only JSON-RPC
   messages; logs and errors go to stderr.
@@ -31,9 +31,18 @@ a fix before public disclosure.
   sends a configured `target_id`, never a path or shell string. Only the
   allowlisted Memcheck option surface is accepted; `trace_children=true` is
   rejected.
-- `analysis_status`, `analysis_report` and `analysis_artifact` are read-only and
-  never launch a program. `analysis_cancel` only signals a run that this server
-  process owns or acknowledges that a persisted run is not active.
+- `analysis_status`, `analysis_report`, `analysis_artifact` and
+  `diagnostics_diff` are read-only and never launch a program. `analysis_cancel`
+  only signals a run that this server process owns or acknowledges that a
+  persisted run is not active.
+- `diagnostics_diff` reads only two opaque run ids, validates both stored
+  reports, compares versioned fingerprints and returns a bounded page. It never
+  reads a client-selected path. Structurally incompatible reports return
+  `incompatible_runs`; downgrading configuration/evidence differences make every
+  item `uncertain` rather than producing a false resolved/new result.
+  Binary/path/outcome changes are reported in `compatibility.changes` without
+  discarding the fingerprint comparison. Duplicate fingerprints and incomplete
+  evidence are explicit.
 - `doctor` and `validate-config` are local, read-only commands. `doctor` uses
   `stat` for path checks and never executes a target.
 - Capability probes run at startup and every 30 seconds. They resolve enabled

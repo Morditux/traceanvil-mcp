@@ -17,6 +17,7 @@ func AnalysisToolNames() []string {
 		"analysis_cancel",
 		"analysis_report",
 		"analysis_artifact",
+		"diagnostics_diff",
 	}
 }
 
@@ -91,6 +92,21 @@ func AnalysisDefinitions(service *analysis.Service) []ToolDefinition {
 				}, func(ctx context.Context, _ *mcp.CallToolRequest, input analysis.ReportRequest) (*mcp.CallToolResult, analysis.ReportPage, error) {
 					page, err := service.Report(ctx, input)
 					return nil, page, err
+				})
+			},
+		},
+		{
+			Name: "diagnostics_diff",
+			Add: func(server *mcp.Server) {
+				mcp.AddTool(server, &mcp.Tool{
+					Name: "diagnostics_diff",
+					Description: "Compare two persisted analysis reports by versioned fingerprint and return " +
+						"bounded new, resolved, persistent, changed and uncertain items. Never launches a " +
+						"program. Incompatible reports fail with incompatible_runs instead of a false diff.",
+					Annotations: readOnlyAnnotations("Diagnostics diff"),
+				}, func(ctx context.Context, _ *mcp.CallToolRequest, input analysis.DiffRequest) (*mcp.CallToolResult, analysis.DiffResult, error) {
+					result, err := service.Diff(ctx, input)
+					return nil, result, err
 				})
 			},
 		},

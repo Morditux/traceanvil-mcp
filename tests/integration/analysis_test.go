@@ -125,3 +125,36 @@ func TestAnalysisTimeoutAboveMaximumRejected(t *testing.T) {
 		t.Errorf("error code = %q, want invalid_argument (%v)", code, err)
 	}
 }
+
+func TestAnalysisDiffRealRuns(t *testing.T) {
+	h := newMemcheckHarness(t, "invalid_read", 30*time.Second, 0)
+	service := newAnalysisService(t, h, 30*time.Second)
+	ctx := context.Background()
+
+	run := func() string {
+		started, err := service.Start(ctx, analysis.StartRequest{TargetID: "fixture"})
+		if err != nil {
+			t.Fatalf("Start() error = %v", err)
+		}
+		final := waitForTerminalPhase(t, service, started.RunID)
+		if final.State != analysis.StateCompleted || final.Phase != analysis.PhaseCompleted {
+			t.Fatalf("final = %+v", final)
+		}
+		return started.RunID
+	}
+	baseID := run()
+	targetID := run()
+	result, err := service.Diff(ctx, analysis.DiffRequest{BaseRunID: baseID, TargetRunID: targetID})
+	if err != nil {
+		t.Fatalf("Diff() error = %v", err)
+	}
+	if result.Compatibility.FingerprintAlgorithm != diagnostic.FingerprintAlgorithmV2 {
+		t.Errorf("algorithm = %q", result.Compatibility.FingerprintAlgorithm)
+	}
+	if result.Summary.Persistent != 1 || result.Summary.New != 0 || result.Summary.Resolved != 0 {
+		t.Errorf("summary = %+v", result.Summary)
+	}
+	if len(result.Items) != 1 || result.Items[0].Change != diagnostic.ChangePersistent {
+		t.Errorf("items = %+v", result.Items)
+	}
+}

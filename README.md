@@ -14,17 +14,21 @@ The value of the project is not arbitrary command execution. It is:
 
 ## Project status
 
-**Early development — J7 (LLDB backend and cross-backend parity) complete.**
+**Early development — J8 (fingerprints, diagnostic pairing and run comparison) complete.**
 
 The repository now provides:
 
 - a working MCP server over **stdio** (`serve`);
 - strict JSON configuration with `validate-config`;
 - `doctor`, a read-only inspection of configuration, paths and capabilities;
+- a versioned diagnostic diff core with fingerprint pairing, new/resolved/
+  persistent/changed/uncertain classification, metadata compatibility checks,
+  bounded pages and golden snapshots;
 - a capability registry, periodic revalidation and conditional tool publication
   with `tools/list_changed`;
 - the J4 analysis tools (`analysis_start`, `analysis_status`, `analysis_cancel`,
-  `analysis_report`, `analysis_artifact`) plus the J6/J7 GDB/LLDB debug tools
+  `analysis_report`, `analysis_artifact`) and the J8 `diagnostics_diff` tool,
+  plus the J6/J7 GDB/LLDB debug tools
   (`debug_start`, `debug_status`, `debug_set_breakpoints`, `debug_continue`,
   `debug_pause`, `debug_step`, `debug_threads`, `debug_stack_trace`,
   `debug_scopes`, `debug_variables`, `debug_stop`). `debug_start` is published
@@ -36,11 +40,12 @@ The repository now provides:
   job lifecycle (`internal/policy`, `runner`, `artifacts`, `jobs`);
 - a Memcheck pipeline (`internal/valgrind`, `internal/diagnostic`): allowlisted
   Valgrind options, XML evidence, a bounded streaming parser, canonical
-  diagnostics, leak/suppression reporting and `analysis.json`;
+  diagnostics, leak/suppression reporting, versioned fingerprints (v2) and
+  `analysis.json`;
 - an analysis API (`internal/analysis`): named errors, asynchronous start,
   status, cancellation, per-request timeouts, filtered and cursor-paginated
-  reports, bounded artifact excerpts, persisted-run fallback and response/cache
-  quotas;
+  reports, bounded artifact excerpts, persisted-run fallback, response/cache
+  quotas and bounded two-run diff pages;
 - a generic DAP client (`internal/dap`): bounded Content-Length framing,
   request/response correlation, late-response accounting, events, timeouts,
   cancellation, capability negotiation, session state transitions, reverse
@@ -152,7 +157,13 @@ read-only and never launches a program.
 `analysis_cancel` stops the process group; `analysis_report` returns the compact
 summary plus a filtered, bounded page of diagnostics with an opaque cursor;
 `analysis_artifact` returns bounded excerpts of `memcheck.xml`, `analysis.json`,
-stdout, stderr or `result.json`.
+stdout, stderr or `result.json`. `diagnostics_diff` compares two persisted
+reports by versioned fingerprint and returns bounded new, resolved, persistent,
+changed and uncertain items. It never launches a program. Downgrading
+configuration/evidence differences make items uncertain; binary/path/outcome
+changes are reported without discarding the fingerprint comparison. Structurally
+incompatible reports fail with `incompatible_runs` rather than producing a
+misleading empty diff.
 
 `debug_start` launches one declared target under GDB or LLDB over DAP and
 returns a `session_id`; `backend` defaults to `gdb` when usable and falls back
@@ -184,7 +195,8 @@ Capabilities are revalidated every 30 seconds and
 `notifications/tools/list_changed` is emitted when the exposed set changes. All
 payloads carry `schema_version = 1`. See [docs/mcp.md](docs/mcp.md) for schemas,
 error codes and pagination, [docs/valgrind.md](docs/valgrind.md) for the evidence
-format and [docs/debugger.md](docs/debugger.md) for the GDB/LLDB backends.
+format, [docs/diff.md](docs/diff.md) for run comparison, and
+[docs/debugger.md](docs/debugger.md) for the GDB/LLDB backends.
 
 ## Repository layout
 
@@ -197,7 +209,7 @@ internal/policy/              Runtime target resolution and argument allowlist
 internal/runner/              Bounded process execution and cleanup
 internal/artifacts/           Private run directories and atomic writes
 internal/jobs/                Job lifecycle, quotas and result manifests
-internal/diagnostic/          Canonical report, normalization and fingerprints
+internal/diagnostic/          Canonical report, fingerprints and run comparison
 internal/valgrind/            Memcheck options, XML parser and analysis service
 internal/analysis/            Analysis API, named errors, pagination and artifacts
 internal/dap/                 Generic DAP framing, client, state and capabilities
@@ -207,12 +219,14 @@ internal/mcpserver/           MCP server, tool publication, analysis and debug t
 internal/version/             Build information
 testdata/fixtures/c/          Reviewed C fixtures for Memcheck E2E tests
 testdata/fixtures/valgrind/   Static valid/truncated/malformed XML fixtures
+testdata/golden/diff/         Deterministic diff reports and expected output
 tests/e2e/                    Real stdio MCP client/server tests
 tests/integration/            Policy → runner → artifacts → jobs, Memcheck E2E
 docs/adr/                     Architecture decision records
 docs/configuration.md         Configuration reference
 docs/artifacts.md             Run directory layout and manifests
 docs/valgrind.md              Memcheck pipeline, report schema and limits
+docs/diff.md                  Fingerprint pairing, compatibility and diff semantics
 docs/dap.md                   DAP framing, client lifecycle, state and limits
 docs/debugger.md              GDB/LLDB backends, debug API, lifecycle and limits
 docs/mcp.md                   MCP transport, tool discovery and payloads
@@ -252,6 +266,11 @@ go test -fuzz=FuzzReadMessage -fuzztime=5s ./internal/dap
 - analysis API tests for 20 000-diagnostic pagination, filters, cursor scoping,
   byte/item bounds, oversized and unreadable diagnostics, report corruption,
   artifact excerpts, FIFO/symlink rejection and named errors;
+- deterministic diff tests and golden snapshots for fingerprint v2,
+  new/resolved/persistent/changed/uncertain pairing, duplicate fingerprints,
+  incompatible metadata, configuration changes, cursor binding and byte bounds;
+- a real Valgrind integration test running the same deterministic fixture twice
+  and comparing the reports as persistent;
 - a real stdio MCP end-to-end test that drives `analysis_start` → `status` →
   `report` → `artifact` against Valgrind, and integration tests for cancellation
   and per-request timeouts that verify no job slot leaks and no false clean

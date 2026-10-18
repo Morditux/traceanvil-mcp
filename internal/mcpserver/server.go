@@ -85,8 +85,8 @@ func New(cfg *config.Config, caps *capabilities.Registry, info version.Info, log
 			Logger: logger,
 			Instructions: "Native dynamic-analysis server. system_capabilities reports build, " +
 				"policy and backend state. analysis_start runs one bounded Memcheck analysis of a " +
-				"declared target; analysis_status, analysis_report and analysis_artifact expose " +
-				"status and bounded evidence. debug_start launches a declared target under GDB or " +
+				"declared target; analysis_status, analysis_report, analysis_artifact and " +
+				"diagnostics_diff expose status, bounded evidence and versioned run comparison. debug_start launches a declared target under GDB or " +
 				"LLDB over DAP; the other debug_* tools inspect a stopped session. No arbitrary " +
 				"attach, expression evaluation, memory read or debugger command is exposed. " +
 				"Backend-gated tools appear only while at least one debugger capability is available; " +

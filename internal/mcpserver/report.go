@@ -97,6 +97,7 @@ func (s *Server) BuildReport() Report {
 func (s *Server) warnings() []string {
 	warnings := []string{
 		"Memcheck is the only implemented analysis tool; GDB and LLDB debugging sessions are implemented at J6/J7.",
+		"diagnostics_diff compares persisted reports only; configuration or evidence differences are uncertain, and incompatible metadata fails with incompatible_runs.",
 		"analysis_start is published only while backend.valgrind is available; analysis_status, analysis_report and analysis_artifact remain available for existing runs.",
 		"debug_start and execution actions are published while at least one of backend.gdb or backend.lldb is available and a target resolves; debug_status and debug_stop remain available for an existing session so it can always be released.",
 		"Debugger sessions are GDB or LLDB. Arbitrary attach, expression evaluation, memory reads, debugger command execution and debugger scripts are not exposed.",

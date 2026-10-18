@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "run_id": "run_22222222222222222222222222222222",
+  "tool": {"name": "valgrind", "path": "/usr/bin/valgrind", "version": "valgrind-3.26.0"},
+  "result": "errors_found",
+  "analysis_complete": true,
+  "program": {
+    "target_id": "fixture",
+    "path": "/workspace/fixture",
+    "sha256": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "args": [],
+    "exit_code": 42
+  },
+  "metadata": {
+    "os": "linux",
+    "arch": "amd64",
+    "workspace_roots": ["/workspace"],
+    "fingerprint_algorithm": "sha256-v2",
+    "parser_version": "1"
+  },
+  "options": {"leak_check": "full"},
+  "summary": {
+    "total": 5,
+    "diagnostic_records": 3,
+    "by_kind": {"InvalidRead": 1, "InvalidFree": 3, "Overlap": 1},
+    "by_severity": {"error": 5},
+    "suppressed": 0,
+    "truncated": false
+  },
+  "diagnostics": [
+    {
+      "id": "target_persistent", "fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "fingerprint_algorithm": "sha256-v2", "origin": "valgrind-memcheck", "kind": "InvalidRead",
+      "severity": "error", "message": "Invalid read of size 4",
+      "location": {"function": "main", "path": "fixture.c", "line": 8},
+      "stack": [{"function": "main", "path": "fixture.c", "line": 8}],
+      "occurrences": 1,
+      "evidence": {"artifact": "memcheck.xml", "record_id": "0x0", "record_index": 0},
+      "confidence": "tool_reported"
+    },
+    {
+      "id": "target_changed", "fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "fingerprint_algorithm": "sha256-v2", "origin": "valgrind-memcheck", "kind": "InvalidFree",
+      "severity": "error", "message": "Invalid free()",
+      "location": {"function": "free_fixture", "path": "fixture.c", "line": 30},
+      "stack": [{"function": "free_fixture", "path": "fixture.c", "line": 30}],
+      "occurrences": 3,
+      "evidence": {"artifact": "memcheck.xml", "record_id": "0x2", "record_index": 2},
+      "confidence": "tool_reported"
+    },
+    {
+      "id": "target_new", "fingerprint": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "fingerprint_algorithm": "sha256-v2", "origin": "valgrind-memcheck", "kind": "Overlap",
+      "severity": "error", "message": "Invalid read of size 8",
+      "location": {"function": "new_fixture", "path": "fixture.c", "line": 40},
+      "stack": [{"function": "new_fixture", "path": "fixture.c", "line": 40}],
+      "occurrences": 1,
+      "evidence": {"artifact": "memcheck.xml", "record_id": "0x3", "record_index": 3},
+      "confidence": "tool_reported"
+    }
+  ],
+  "artifacts": [],
+  "warnings": []
+}

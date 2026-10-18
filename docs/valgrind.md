@@ -200,10 +200,12 @@ Still-reachable blocks are not automatically leaks.
   `/usr/src/valgrind*`) are flagged `runtime` and excluded from the primary
   location and from fingerprints.
 - A missing file or line stays missing. The server never invents a location.
-- Fingerprint v1 is SHA-256 over `origin + kind + selected non-runtime frames`
-  (function, normalized path, line). Addresses, PIDs, TIDs, timestamps and run
-  ids are excluded. Inlining, missing symbols and line movement can still
-  change it; it is a versioned heuristic, not proof of identity.
+- New reports use fingerprint v2: length-prefixed origin/kind plus selected
+  non-runtime frames (function, normalized path) with **no line**. v1 remains
+  readable for older persisted reports and includes the line. Addresses, PIDs,
+  TIDs, timestamps and run ids are excluded from both recipes. Inlining, missing
+  symbols and path remapping can still change a digest; fingerprints are
+  versioned heuristics, not proof of identity. See [diff.md](diff.md).
 
 ### Exit codes
 

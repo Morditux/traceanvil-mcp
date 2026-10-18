@@ -171,3 +171,12 @@ errors occur in the SDK before the handler and are documented separately.
 - The periodic probe interval is a constant, not configuration. Making it
   configurable is deferred until there is an operational need; the probes are
   cheap and bounded.
+
+## J8 addendum
+
+J8 adds `diagnostics_diff`, backed by `analysis.Service.Diff`. It reuses the
+bounded report reader and page conventions but compares two persisted reports
+instead of paging one. Diff cursors are bound to both run ids and the diff rules;
+structural incompatibility returns `incompatible_runs`, while configuration or
+evidence differences classify items `uncertain`. Fingerprint v2 and the complete
+comparison contract are recorded in ADR 0011 and `docs/diff.md`.

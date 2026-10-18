@@ -41,7 +41,7 @@ func TestBuildReportInvalidRead(t *testing.T) {
 	if d.Occurrences != 1 || d.Evidence.Artifact != RawArtifactName || d.Evidence.RecordID != "0x0" {
 		t.Errorf("evidence = %+v", d.Evidence)
 	}
-	if !strings.HasPrefix(d.Fingerprint, "sha256:") || d.FingerprintAlgorithm != diagnostic.FingerprintAlgorithmV1 {
+	if !strings.HasPrefix(d.Fingerprint, "sha256:") || d.FingerprintAlgorithm != diagnostic.FingerprintAlgorithmV2 {
 		t.Errorf("fingerprint = %q algorithm=%q", d.Fingerprint, d.FingerprintAlgorithm)
 	}
 	if len(d.ContextStacks) != 1 || len(d.ContextStacks[0].Frames) != 2 {

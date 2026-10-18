@@ -1,8 +1,8 @@
 # Compatibility inventory
 
 Recorded on 2026-10-18 from a **read-only** inspection of the reference development
-machine and refreshed at J7 from a read-only inspection plus real GDB and LLDB DAP
-tests.
+machine and refreshed at J8 from a read-only inspection plus real GDB/LLDB
+and deterministic diff tests.
 Re-run `./scripts/preflight.sh` after changing the toolchain and update this
 table; CI runners may differ.
 
@@ -56,10 +56,10 @@ Transitive modules are pinned in `go.sum`. `./scripts/check.sh` runs
 
 Suggested explicit installation (human decision, never performed by the server):
 
-At J7, Valgrind, GDB, LLDB, Clang, Ninja, ShellCheck, gdbserver,
+At J8, Valgrind, GDB, LLDB, Clang, Ninja, ShellCheck, gdbserver,
 `callgrind_annotate` and `ms_print` are installed. No package was installed for
-J7; the real GDB/LLDB tests use the existing GDB 17.1 and LLDB 21.1.8 packages.
-No optional package used by the J7 tests is missing.
+J8; the real GDB/LLDB tests use the existing GDB 17.1 and LLDB 21.1.8 packages.
+The diff tests are deterministic and need no additional toolchain.
 
 `lldb-dap` is shipped here as both `lldb-dap` and `lldb-dap-21`; discovery handles
 both names, prefers the unsuffixed adapter, orders versioned candidates newest
@@ -86,8 +86,8 @@ Read only; the project never modifies these values.
   backend is available. `backend.lldb` is also `available` after its DAP
   handshake and versioned discovery. `helgrind_run`, `drd_run`,
   `profile_callgrind`, `profile_massif` and `profile_perf` must **not** appear in
-  `tools/list` at J7. The analysis evidence tools and debug management tools stay
-  published where documented.
+  `tools/list` at J8. The analysis evidence tools, `diagnostics_diff` and debug
+  management tools stay published where documented.
 - `backend.valgrind` is `available` after the functional Memcheck/XML help probe;
   every run revalidates the binary, and a capability refresh removes
   `analysis_start` if the backend disappears. The GDB probe launches `gdb
@@ -96,6 +96,11 @@ Read only; the project never modifies these values.
   the binary and target policy. The LLDB probe discovers `lldb-dap` and
   `lldb-dap-<N>` in absolute PATH directories, verifies `initialize` with fixed
   init settings and never loads a target.
+- `diagnostics_diff` is published whenever the analysis service exists, even
+  when Valgrind is unavailable. It compares persisted reports only. New reports
+  use `sha256-v2`; v1/v2 pairs are `incompatible_runs`. Downgrading
+  configuration/evidence changes classify items `uncertain`; binary/path/outcome
+  changes are reported without discarding classification.
 - LLDB is no longer discovery-only: `backend.lldb` is `available` on this
   machine. A binary on `PATH` alone remains insufficient; the DAP handshake is
   required. Discovery prefers `lldb-dap`, then versioned candidates in
@@ -148,11 +153,17 @@ Read only; the project never modifies these values.
   `unavailable`. As of J3/J4, `backend.valgrind` is `available` on this machine.
   At J6, `backend.gdb` became `available` after the DAP handshake. At J7,
   `backend.lldb` is also `available` through `lldb-dap` 21.1.8 and its
-  versioned-discovery probe. Neither capability probe runs a user program, but
-  every `debug_start` executes the declared target, which remains untrusted code.
+  versioned-discovery probe. At J8, diagnostics_diff compares persisted reports
+  without running a program; new reports carry fingerprint v2. Neither capability
+  probe runs a user program, but every `debug_start` executes the declared target,
+  which remains untrusted code.
 - Valgrind support varies with kernel, architecture and instruction set. The J3
   probe checks `--version` plus the Memcheck XML options in `--tool=memcheck
   --help`; the first authorized fixture run revalidates the binary. A help check
   is still not a substitute for running the tool on a real target.
 - DAP behaviour differs between GDB and LLDB; each discrepancy must be covered by
   a capability check and a degraded behaviour test.
+- Fingerprint v2 is not a proof of identity. Inlining, missing symbols and path
+  remapping can change a digest; v1 and v2 reports are never compared across
+  recipes. Duplicate fingerprints and incomplete reports are explicitly
+  uncertain.

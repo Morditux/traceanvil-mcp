@@ -15,11 +15,12 @@ when all of the following hold:
 4. the required capability is `available`.
 
 `analysis_start` additionally requires `backend.valgrind = available` because it
-launches a target. The four evidence tools (`analysis_status`, `analysis_cancel`,
-`analysis_report`, `analysis_artifact`) are always published when the analysis
-service is running: they never launch a program and remain usable for an
-in-flight run or a run persisted by a previous server process, even if the
-backend later disappears. They return `run_not_found` when no such run exists.
+launches a target. The five evidence/report tools (`analysis_status`,
+`analysis_cancel`, `analysis_report`, `analysis_artifact`, `diagnostics_diff`)
+are always published when the analysis service is running: they never launch a
+program and remain usable for an in-flight run or a run persisted by a previous
+server process, even if the backend later disappears. They return
+`run_not_found` when no such run exists.
 
 `debug_start` requires at least one of `backend.gdb` or `backend.lldb` to be
 `available` **and** at least one declared target that currently resolves under
@@ -45,6 +46,7 @@ support dynamic lists must reconnect.
 | `analysis_cancel` | no (signals a run started by this server) | — | no |
 | `analysis_report` | no | — | yes |
 | `analysis_artifact` | no | — | yes |
+| `diagnostics_diff` | no (compares two persisted reports) | — | yes |
 | `debug_start` | **yes**, an allowlisted target under GDB or LLDB | one debugger backend and a usable target | no |
 | `debug_status` | no | a debugger backend or a retained session | yes |
 | `debug_set_breakpoints` | no | at least one debugger backend | no |
@@ -59,7 +61,7 @@ support dynamic lists must reconnect.
 
 ## Shared conventions
 
-- Every payload has a `schema_version` (`1` at J4–J7). It changes only for an
+- Every payload has a `schema_version` (`1` at J4–J8). It changes only for an
   incompatible shape change; additive fields keep the version.
 - `run_id` is an opaque `run_<32 lowercase hex>` identifier. It is not a path.
 - `session_id` is an opaque `dbg_<32 lowercase hex>` identifier. It is not a
@@ -323,6 +325,55 @@ filters or another run returns `invalid_cursor`.
 - The `summary` is always the full report summary, independent of filters and
   pagination.
 
+## `diagnostics_diff`
+
+Compares two persisted reports by versioned fingerprint and returns bounded
+`new`, `resolved`, `persistent`, `changed` and `uncertain` items. It never
+launches a program. New reports use `sha256-v2`; v1 reports remain comparable
+only with v1. See [diff.md](diff.md) for the full semantics, compatibility
+rules and fingerprint recipes.
+
+**Input**
+
+| Field | Type | Required | Rules |
+|---|---|---|---|
+| `base_run_id` | string | yes | Reference/older run id. |
+| `target_run_id` | string | yes | Candidate/newer run id; must differ from the base. |
+| `cursor` | string | no | Opaque `page.next_cursor` from the same pair. |
+| `limit` | integer | no | Page size, bounded by the server cap. |
+
+**Output**
+
+```json
+{
+  "schema_version": 1,
+  "base_run_id": "run_0123456789abcdef0123456789abcdef",
+  "target_run_id": "run_fedcba9876543210fedcba9876543210",
+  "compatibility": {"fingerprint_algorithm": "sha256-v2"},
+  "summary": {
+    "base_diagnostics": 2, "target_diagnostics": 3,
+    "base_occurrences": 2, "target_occurrences": 4,
+    "new": 1, "resolved": 0, "persistent": 1,
+    "changed": 0, "uncertain": 0
+  },
+  "page": {
+    "offset": 0, "limit": 50, "returned": 2, "matched": 2,
+    "consumed": 2, "has_more": false,
+    "byte_budget_reached": false
+  },
+  "items": [],
+  "warnings": []
+}
+```
+
+`compatibility.changes` reports observed differences (including binary, path and
+program outcome changes). `compatibility.uncertainties` is the downgrading set
+(tool/parser versions, options, roots, arguments, suppressions, incomplete
+evidence or missing metadata); when it is non-empty every item is `uncertain`
+rather than a false new/resolved/persistent. A structurally incompatible pair
+returns `incompatible_runs` and no item list. Duplicate fingerprints are reported with
+`base_count`/`target_count` and a reason.
+
 ## `analysis_artifact`
 
 Returns a bounded UTF-8 excerpt of one allowlisted artifact. **No filesystem
@@ -522,6 +573,7 @@ sessions. Detach is not exposed in J6/J7; a terminated session is the final stat
     {"name": "analysis_cancel", "state": "available", "exposed": true, "reason": "implemented and enabled"},
     {"name": "analysis_report", "state": "available", "exposed": true, "reason": "implemented and enabled"},
     {"name": "analysis_artifact", "state": "available", "exposed": true, "reason": "implemented and enabled"},
+    {"name": "diagnostics_diff", "state": "available", "exposed": true, "reason": "implemented and enabled"},
     {"name": "debug_start", "state": "available", "required_capabilities": ["backend.gdb", "backend.lldb"], "exposed": true, "reason": "one debugger backend available"},
     {"name": "debug_status", "state": "available", "exposed": true, "reason": "implemented and enabled"},
     {"name": "debug_set_breakpoints", "state": "available", "exposed": true, "reason": "one debugger backend available"},
@@ -590,6 +642,8 @@ difference matrix, session lifecycle and limits.
 | `report_unavailable` | Run exists but its normalized report is missing or not yet written. |
 | `report_invalid` | Stored report violates its schema or internal invariants. |
 | `report_too_large` | Stored report exceeds the API read bound (bytes or record count). |
+| `incompatible_runs` | Two reports cannot be compared honestly (tool/target/OS/architecture/fingerprint algorithm or unusable evidence). |
+| `diff_too_large` | A diff item or the response envelope exceeds the response byte bound. |
 | `artifact_unavailable` | Requested artifact is missing or rejected by the store. |
 | `canceled` | The caller's context was canceled. |
 | `timeout` | The caller's context deadline expired. |

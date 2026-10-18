@@ -138,6 +138,17 @@ released yet; milestones map to the development plan.
   matrix.
 - J7: ADR 0010, `docs/debugger.md` and compatibility documentation updated;
   `backend.lldb` is available on the reference machine after the DAP handshake.
+- J8: fingerprint v2 with length-prefixed fields, normalized paths and no
+  source-line dependency; v1 remains readable for matching persisted reports.
+- J8: diagnostic diff core with new/resolved/persistent/changed/uncertain
+  classification, duplicate-fingerprint uncertainty and conservative
+  configuration/evidence compatibility checks.
+- J8: `diagnostics_diff` read-only MCP tool, bounded pages, pair-bound cursors,
+  `incompatible_runs` and `diff_too_large` named errors.
+- J8: deterministic golden base/target/expected snapshots in
+  `testdata/golden/diff/`.
+- J8: ADR 0011 and `docs/diff.md`; README, SECURITY, MCP and compatibility
+  documentation updated.
 
 ### Changed
 
@@ -177,6 +188,11 @@ released yet; milestones map to the development plan.
   loading a target.
 - J7: the session implementation is backend-neutral (`backend.go`, `session.go`,
   `process.go`) instead of a GDB-only file.
+- J8: new analysis reports use `sha256-v2`; report readers accept v1 and v2, but
+  a diff requires both runs to use the same algorithm. Report compatibility
+  metadata is now parsed for comparisons without changing `analysis_report`.
+- J8: `diagnostics_diff` is always published with the analysis service, even
+  when `backend.valgrind` is unavailable. It never launches a program.
 
 ### Security
 
@@ -234,6 +250,13 @@ released yet; milestones map to the development plan.
   `supportTerminateDebuggee`; termination and teardown (stop, close, startup
   failure) use a best-effort disconnect plus group cleanup, with fixture PID
   checks.
+- J8: diff output never turns incompatible metadata into an empty/resolved
+  result. Downgrading configuration/evidence changes mark every item uncertain;
+  binary/path/outcome changes are reported without discarding classification.
+  Hard incompatibilities fail with `incompatible_runs`.
+- J8: diff items are compact (no full stacks), pages are item/byte bounded, and
+  cursors are bound to both run ids. Duplicate fingerprints and truncation are
+  explicit.
 
 ## 0.0.0 — 2026-10-18
 

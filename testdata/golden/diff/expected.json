@@ -1,0 +1,158 @@
+{
+  "base_run_id": "run_11111111111111111111111111111111",
+  "target_run_id": "run_22222222222222222222222222222222",
+  "compatibility": {
+    "fingerprint_algorithm": "sha256-v2"
+  },
+  "summary": {
+    "base_diagnostics": 3,
+    "target_diagnostics": 3,
+    "base_occurrences": 3,
+    "target_occurrences": 5,
+    "new": 1,
+    "resolved": 1,
+    "persistent": 1,
+    "changed": 1,
+    "uncertain": 0
+  },
+  "items": [
+    {
+      "change": "persistent",
+      "base": {
+        "id": "base_persistent",
+        "fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "fingerprint_algorithm": "sha256-v2",
+        "origin": "valgrind-memcheck",
+        "kind": "InvalidRead",
+        "severity": "error",
+        "message": "Invalid read of size 4",
+        "location": {
+          "function": "main",
+          "path": "fixture.c",
+          "line": 8
+        },
+        "occurrences": 1,
+        "evidence": {
+          "artifact": "memcheck.xml",
+          "record_id": "0x0",
+          "record_index": 0
+        },
+        "confidence": "tool_reported"
+      },
+      "target": {
+        "id": "target_persistent",
+        "fingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "fingerprint_algorithm": "sha256-v2",
+        "origin": "valgrind-memcheck",
+        "kind": "InvalidRead",
+        "severity": "error",
+        "message": "Invalid read of size 4",
+        "location": {
+          "function": "main",
+          "path": "fixture.c",
+          "line": 8
+        },
+        "occurrences": 1,
+        "evidence": {
+          "artifact": "memcheck.xml",
+          "record_id": "0x0",
+          "record_index": 0
+        },
+        "confidence": "tool_reported"
+      }
+    },
+    {
+      "change": "resolved",
+      "base": {
+        "id": "base_resolved",
+        "fingerprint": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "fingerprint_algorithm": "sha256-v2",
+        "origin": "valgrind-memcheck",
+        "kind": "InvalidWrite",
+        "severity": "error",
+        "message": "Invalid write of size 4",
+        "location": {
+          "function": "write_fixture",
+          "path": "fixture.c",
+          "line": 20
+        },
+        "occurrences": 1,
+        "evidence": {
+          "artifact": "memcheck.xml",
+          "record_id": "0x1",
+          "record_index": 1
+        },
+        "confidence": "tool_reported"
+      }
+    },
+    {
+      "change": "changed",
+      "base": {
+        "id": "base_changed",
+        "fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "fingerprint_algorithm": "sha256-v2",
+        "origin": "valgrind-memcheck",
+        "kind": "InvalidFree",
+        "severity": "error",
+        "message": "Invalid free()",
+        "location": {
+          "function": "free_fixture",
+          "path": "fixture.c",
+          "line": 30
+        },
+        "occurrences": 1,
+        "evidence": {
+          "artifact": "memcheck.xml",
+          "record_id": "0x2",
+          "record_index": 2
+        },
+        "confidence": "tool_reported"
+      },
+      "target": {
+        "id": "target_changed",
+        "fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "fingerprint_algorithm": "sha256-v2",
+        "origin": "valgrind-memcheck",
+        "kind": "InvalidFree",
+        "severity": "error",
+        "message": "Invalid free()",
+        "location": {
+          "function": "free_fixture",
+          "path": "fixture.c",
+          "line": 30
+        },
+        "occurrences": 3,
+        "evidence": {
+          "artifact": "memcheck.xml",
+          "record_id": "0x2",
+          "record_index": 2
+        },
+        "confidence": "tool_reported"
+      }
+    },
+    {
+      "change": "new",
+      "target": {
+        "id": "target_new",
+        "fingerprint": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "fingerprint_algorithm": "sha256-v2",
+        "origin": "valgrind-memcheck",
+        "kind": "Overlap",
+        "severity": "error",
+        "message": "Invalid read of size 8",
+        "location": {
+          "function": "new_fixture",
+          "path": "fixture.c",
+          "line": 40
+        },
+        "occurrences": 1,
+        "evidence": {
+          "artifact": "memcheck.xml",
+          "record_id": "0x3",
+          "record_index": 3
+        },
+        "confidence": "tool_reported"
+      }
+    }
+  ]
+}
