@@ -20,6 +20,7 @@ import (
 	"github.com/Morditux/traceanvil-mcp/internal/diagnostic"
 	"github.com/Morditux/traceanvil-mcp/internal/jobs"
 	"github.com/Morditux/traceanvil-mcp/internal/policy"
+	"github.com/Morditux/traceanvil-mcp/internal/sanitizer"
 	"github.com/Morditux/traceanvil-mcp/internal/valgrind"
 )
 
@@ -51,7 +52,8 @@ const (
 
 var runIDPattern = regexp.MustCompile(`^run_[0-9a-f]{32}$`)
 
-// Run is one live analysis. *valgrind.Analysis implements it.
+// Run is one live analysis. *valgrind.Analysis and *sanitizer.Analysis
+// implement it.
 type Run interface {
 	ID() string
 	Snapshot() valgrind.AnalysisSnapshot
@@ -59,8 +61,8 @@ type Run interface {
 	Cancel()
 }
 
-// Backend starts and tracks analyses. NewValgrindBackend adapts the Memcheck
-// service; tests provide fakes.
+// Backend starts and tracks analyses. NewValgrindBackend adapts the Valgrind
+// service and NewSanitizerBackend adapts sanitizer runs; tests provide fakes.
 type Backend interface {
 	Start(context.Context, valgrind.Request) (Run, error)
 	Get(runID string) (Run, bool)
@@ -71,7 +73,7 @@ type ValgrindBackend struct {
 	Service *valgrind.Service
 }
 
-// NewValgrindBackend returns an adapter for a Memcheck service.
+// NewValgrindBackend returns an adapter for a Valgrind service.
 func NewValgrindBackend(service *valgrind.Service) *ValgrindBackend {
 	return &ValgrindBackend{Service: service}
 }
@@ -104,14 +106,20 @@ func (b *ValgrindBackend) Get(runID string) (Run, bool) {
 type Options struct {
 	Store   *artifacts.Store
 	Backend Backend
+	// Backends optionally maps tool names to backends. When empty, Backend is
+	// used for memcheck, helgrind and drd (legacy wiring).
+	Backends map[string]Backend
 
-	// BackendEnabled reflects configuration. When false, analysis_start is
-	// rejected with tool_disabled and the MCP server does not publish it.
+	// BackendEnabled reflects configuration. When false, analysis starts are
+	// rejected with tool_disabled and the MCP server does not publish them.
 	BackendEnabled bool
 	// BackendAvailable is consulted on every start so a capability refresh is
 	// effective without restarting the server. A nil function means "enabled
 	// and assumed available".
 	BackendAvailable func() (available bool, reason string)
+	// BackendAvailableFor optionally applies per-tool capability checks. When
+	// nil, BackendAvailable is used for every tool.
+	BackendAvailableFor func(tool string) (available bool, reason string)
 
 	// Timeout is the configured default and maximum job timeout.
 	Timeout time.Duration
@@ -136,11 +144,12 @@ type Options struct {
 
 // Service implements the analysis API. It is safe for concurrent use.
 type Service struct {
-	store   *artifacts.Store
-	backend Backend
+	store    *artifacts.Store
+	backends map[string]Backend
 
-	backendEnabled   bool
-	backendAvailable func() (bool, string)
+	backendEnabled      bool
+	backendAvailable    func() (bool, string)
+	backendAvailableFor func(string) (bool, string)
 
 	timeout              time.Duration
 	maxResponseItems     int
@@ -164,7 +173,7 @@ func New(opts Options) (*Service, error) {
 	if opts.Store == nil {
 		return nil, errors.New("analysis: nil artifact store")
 	}
-	if opts.Backend == nil {
+	if opts.Backend == nil && len(opts.Backends) == 0 {
 		return nil, errors.New("analysis: nil backend")
 	}
 	if opts.Timeout <= 0 {
@@ -206,11 +215,28 @@ func New(opts Options) (*Service, error) {
 		cache = newReportCache(opts.MaxCacheBytes, opts.MaxCacheEntryBytes)
 	}
 
+	backends := make(map[string]Backend, len(opts.Backends)+3)
+	if len(opts.Backends) > 0 {
+		for tool, backend := range opts.Backends {
+			if !ValidTool(tool) {
+				return nil, fmt.Errorf("analysis: unsupported backend tool %q", tool)
+			}
+			if backend == nil {
+				return nil, fmt.Errorf("analysis: nil backend for tool %q", tool)
+			}
+			backends[tool] = backend
+		}
+	} else if opts.Backend != nil {
+		for _, tool := range []string{ToolMemcheck, ToolHelgrind, ToolDRD} {
+			backends[tool] = opts.Backend
+		}
+	}
 	return &Service{
 		store:                opts.Store,
-		backend:              opts.Backend,
+		backends:             backends,
 		backendEnabled:       opts.BackendEnabled,
 		backendAvailable:     opts.BackendAvailable,
+		backendAvailableFor:  opts.BackendAvailableFor,
 		timeout:              opts.Timeout,
 		maxResponseItems:     opts.MaxResponseItems,
 		maxPageItems:         opts.MaxPageItems,
@@ -262,8 +288,9 @@ func (s *Service) Start(ctx context.Context, req StartRequest) (Status, error) {
 	if tool == "" {
 		tool = ToolMemcheck
 	}
-	if tool != ToolMemcheck {
-		return Status{}, Errorf(CodeUnknownTool, "tool %q is not supported; supported tools: %s", tool, ToolMemcheck)
+	if !ValidTool(tool) {
+		return Status{}, Errorf(CodeUnknownTool,
+			"tool %q is not supported; supported tools: memcheck, helgrind, drd, asan, ubsan, lsan, tsan", tool)
 	}
 	if strings.TrimSpace(req.TargetID) == "" {
 		return Status{}, Errorf(CodeInvalidArgument, "target_id must not be empty")
@@ -275,16 +302,26 @@ func (s *Service) Start(ctx context.Context, req StartRequest) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	opts, err := req.Options.valgrindOptions()
-	if err != nil {
-		return Status{}, err
+	var opts *valgrind.Options
+	if tool == ToolMemcheck {
+		opts, err = req.Options.valgrindOptions()
+		if err != nil {
+			return Status{}, err
+		}
+	} else if req.Options != nil {
+		return Status{}, Errorf(CodeInvalidArgument, "options are only supported for memcheck")
 	}
-	if err := s.checkBackend(); err != nil {
+	if err := s.checkBackend(tool); err != nil {
 		return Status{}, err
 	}
 
-	run, err := s.backend.Start(ctx, valgrind.Request{
+	backend, ok := s.backends[tool]
+	if !ok {
+		return Status{}, Errorf(CodeBackendUnavailable, "no backend is configured for tool %q", tool)
+	}
+	run, err := backend.Start(ctx, valgrind.Request{
 		TargetID: req.TargetID,
+		Tool:     valgrind.Tool(tool),
 		Args:     append([]string{}, req.Args...),
 		Options:  opts,
 		Timeout:  timeout,
@@ -310,19 +347,24 @@ func (s *Service) resolveTimeout(timeoutMS int) (time.Duration, error) {
 	return time.Duration(timeoutMS) * time.Millisecond, nil
 }
 
-func (s *Service) checkBackend() error {
+func (s *Service) checkBackend(tool string) error {
 	if !s.backendEnabled {
-		return Errorf(CodeToolDisabled, "the valgrind backend is disabled by configuration")
+		return Errorf(CodeToolDisabled, "the analysis backend is disabled by configuration")
 	}
-	if s.backendAvailable == nil {
+	var available bool
+	var reason string
+	if s.backendAvailableFor != nil {
+		available, reason = s.backendAvailableFor(tool)
+	} else if s.backendAvailable != nil {
+		available, reason = s.backendAvailable()
+	} else {
 		return nil
 	}
-	available, reason := s.backendAvailable()
 	if available {
 		return nil
 	}
 	if strings.TrimSpace(reason) == "" {
-		reason = "the valgrind backend is not available"
+		reason = "the " + tool + " backend is not available"
 	}
 	return Errorf(CodeBackendUnavailable, "%s", reason)
 }
@@ -337,7 +379,13 @@ func mapStartError(err error) error {
 	if errors.As(err, &backendErr) {
 		return Wrap(CodeBackendUnavailable, err, "%s", backendErr.Reason)
 	}
+	var sanitizerErr *sanitizer.BackendError
+	if errors.As(err, &sanitizerErr) {
+		return Wrap(CodeBackendUnavailable, err, "%s", sanitizerErr.Reason)
+	}
 	switch {
+	case errors.Is(err, sanitizer.ErrClosed):
+		return Wrap(CodeClosed, err, "analysis service is closed")
 	case errors.Is(err, valgrind.ErrClosed):
 		return Wrap(CodeClosed, err, "analysis service is closed")
 	case errors.Is(err, valgrind.ErrBackendUnavailable):
@@ -379,7 +427,7 @@ func (s *Service) Status(ctx context.Context, req StatusRequest) (Status, error)
 	if err := validateRunID(req.RunID); err != nil {
 		return Status{}, err
 	}
-	if run, ok := s.backend.Get(req.RunID); ok {
+	if run, ok := s.getRun(req.RunID); ok {
 		return s.statusFromLive(run), nil
 	}
 	if !s.store.RunExists(req.RunID) {
@@ -400,7 +448,7 @@ func (s *Service) Cancel(ctx context.Context, req CancelRequest) (CancelResult, 
 	if err := validateRunID(req.RunID); err != nil {
 		return CancelResult{}, err
 	}
-	if run, ok := s.backend.Get(req.RunID); ok {
+	if run, ok := s.getRun(req.RunID); ok {
 		snap := run.Snapshot()
 		job := run.JobSnapshot()
 		phase := phaseFromValgrind(snap.Phase)
@@ -565,6 +613,7 @@ func (s *Service) buildReportPage(req ReportRequest, header reportHeader, diagno
 	page := ReportPage{
 		SchemaVersion:    APISchemaVersion,
 		RunID:            req.RunID,
+		AnalysisTool:     toolFromHeader(header),
 		Tool:             header.Tool,
 		Result:           header.Result,
 		AnalysisComplete: header.AnalysisComplete,
@@ -651,7 +700,7 @@ func (s *Service) Artifact(ctx context.Context, req ArtifactRequest) (ArtifactOu
 	if req.MaxBytes < 0 {
 		return ArtifactOutput{}, Errorf(CodeInvalidArgument, "max_bytes must not be negative")
 	}
-	name, err := artifactFileName(ToolMemcheck, req.ArtifactType)
+	name, err := s.artifactName(ctx, req.RunID, req.ArtifactType)
 	if err != nil {
 		return ArtifactOutput{}, err
 	}
@@ -736,6 +785,41 @@ func (s *Service) pageLimit(requested int) (int, error) {
 	}
 }
 
+func (s *Service) artifactName(ctx context.Context, runID string, artifactType ArtifactType) (string, error) {
+	if artifactType == ArtifactRawLog {
+		if header, err := s.readHeader(ctx, runID); err == nil {
+			for _, artifact := range header.Artifacts {
+				if artifact.Kind == "raw_log" && artifact.Name != "" {
+					return artifact.Name, nil
+				}
+			}
+		}
+		if manifest, err := readJobManifest(s.store, runID); err == nil && isSanitizerTool(manifest.Tool) {
+			return "sanitizer.log", nil
+		}
+		return "stderr.log", nil
+	}
+	if artifactType != ArtifactRawXML {
+		return artifactFileName(ToolMemcheck, artifactType)
+	}
+	tool := ToolMemcheck
+	if header, err := s.readHeader(ctx, runID); err == nil {
+		tool = toolFromHeader(header)
+	} else if manifest, manifestErr := readJobManifest(s.store, runID); manifestErr == nil && manifest.Tool != "" {
+		tool = manifest.Tool
+	}
+	return artifactFileName(tool, artifactType)
+}
+
+func isSanitizerTool(tool string) bool {
+	switch tool {
+	case ToolASan, ToolUBSan, ToolLSan, ToolTSan:
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *Service) artifactError(runID, name string, err error, code ErrorCode, format string, args ...any) error {
 	if errors.Is(err, os.ErrNotExist) {
 		if !s.store.RunExists(runID) {
@@ -756,13 +840,50 @@ func validateRunID(runID string) error {
 	return nil
 }
 
+func (s *Service) getRun(runID string) (Run, bool) {
+	for _, backend := range s.backends {
+		if run, ok := backend.Get(runID); ok {
+			return run, true
+		}
+	}
+	return nil, false
+}
+
+func toolFromSnapshot(snapshot valgrind.AnalysisSnapshot) string {
+	if snapshot.Tool != "" {
+		return string(snapshot.Tool)
+	}
+	if snapshot.Report != nil {
+		return toolFromReport(*snapshot.Report)
+	}
+	return ToolMemcheck
+}
+
+func toolFromReport(report diagnostic.Report) string {
+	if value, ok := report.Options["tool"].(string); ok && ValidTool(value) {
+		return value
+	}
+	switch report.Tool.Name {
+	case ToolHelgrind, ToolDRD:
+		return report.Tool.Name
+	}
+	return ToolMemcheck
+}
+
+func toolFromHeader(header reportHeader) string {
+	if value, ok := header.Options["tool"].(string); ok && ValidTool(value) {
+		return value
+	}
+	return ToolMemcheck
+}
+
 func (s *Service) statusFromLive(run Run) Status {
 	snapshot := run.Snapshot()
 	job := run.JobSnapshot()
 	status := Status{
 		SchemaVersion: APISchemaVersion,
 		RunID:         run.ID(),
-		Tool:          ToolMemcheck,
+		Tool:          toolFromSnapshot(snapshot),
 		TargetID:      job.TargetID,
 		State:         stateFromJobs(job.State),
 		Phase:         phaseFromValgrind(snapshot.Phase),
@@ -834,6 +955,9 @@ func (s *Service) statusFromDisk(ctx context.Context, runID string) (Status, err
 	if manifestErr == nil {
 		status.TargetID = manifest.TargetID
 		status.State = stateFromJobs(manifest.State)
+		if manifest.Tool != "" {
+			status.Tool = manifest.Tool
+		}
 		status.StartedAt = formatTimePtr(manifest.StartedAt)
 		status.FinishedAt = formatTimePtr(manifest.FinishedAt)
 		status.Progress.ElapsedMS = elapsedMilliseconds(manifest.StartedAt, manifest.FinishedAt, time.Now())
@@ -853,6 +977,7 @@ func (s *Service) statusFromDisk(ctx context.Context, runID string) (Status, err
 
 	header, headerErr := s.readHeader(ctx, runID)
 	if headerErr == nil {
+		status.Tool = toolFromHeader(header)
 		status.Result = header.Result
 		status.AnalysisComplete = header.AnalysisComplete
 		program := header.Program
@@ -1048,7 +1173,8 @@ func metricsFromReport(report *diagnostic.Report) Metrics {
 		Occurrences: report.Summary.Total,
 		Suppressed:  report.Summary.Suppressed,
 	}
-	metrics.RawXMLBytes = artifactBytes(report.Artifacts, valgrind.RawArtifactName)
+	metrics.RawXMLBytes = artifactBytesByKind(report.Artifacts, "raw_xml")
+	metrics.RawLogBytes = artifactBytesByKind(report.Artifacts, "raw_log")
 	return metrics
 }
 
@@ -1058,17 +1184,19 @@ func metricsFromReportHeader(header reportHeader) Metrics {
 		Occurrences: header.Summary.Total,
 		Suppressed:  header.Summary.Suppressed,
 	}
-	metrics.RawXMLBytes = artifactBytes(header.Artifacts, valgrind.RawArtifactName)
+	metrics.RawXMLBytes = artifactBytesByKind(header.Artifacts, "raw_xml")
+	metrics.RawLogBytes = artifactBytesByKind(header.Artifacts, "raw_log")
 	return metrics
 }
 
-func artifactBytes(artifacts []diagnostic.Artifact, name string) int64 {
+func artifactBytesByKind(artifacts []diagnostic.Artifact, kind string) int64 {
+	var total int64
 	for _, artifact := range artifacts {
-		if artifact.Name == name {
-			return artifact.Bytes
+		if artifact.Kind == kind {
+			total += artifact.Bytes
 		}
 	}
-	return 0
+	return total
 }
 
 func mergeJobMetrics(metrics *Metrics, result *jobs.Result) {

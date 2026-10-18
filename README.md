@@ -14,21 +14,27 @@ The value of the project is not arbitrary command execution. It is:
 
 ## Project status
 
-**Early development — J8 (fingerprints, diagnostic pairing and run comparison) complete.**
+**Early development — J9 (Helgrind, DRD and sanitizers) complete.**
 
 The repository now provides:
 
 - a working MCP server over **stdio** (`serve`);
 - strict JSON configuration with `validate-config`;
 - `doctor`, a read-only inspection of configuration, paths and capabilities;
+- Helgrind and DRD adapters on the Valgrind XML pipeline with tool-specific
+  origins, severity classification, capabilities and concurrency tests;
+- bounded ASan, UBSan, LSan and TSan log parsers plus a sanitizer execution
+  backend for targets that explicitly declare their instrumentation;
 - a versioned diagnostic diff core with fingerprint pairing, new/resolved/
   persistent/changed/uncertain classification, metadata compatibility checks,
   bounded pages and golden snapshots;
 - a capability registry, periodic revalidation and conditional tool publication
   with `tools/list_changed`;
-- the J4 analysis tools (`analysis_start`, `analysis_status`, `analysis_cancel`,
-  `analysis_report`, `analysis_artifact`) and the J8 `diagnostics_diff` tool,
-  plus the J6/J7 GDB/LLDB debug tools
+- the J4/J9 analysis tools (`analysis_start`, `helgrind_run`, `drd_run`,
+  `asan_run`, `ubsan_run`, `lsan_run`, `tsan_run`, `analysis_status`,
+  `analysis_cancel`, `analysis_report`,
+  `analysis_artifact`), the J8 `diagnostics_diff` tool and the J6/J7 GDB/LLDB
+  debug tools
   (`debug_start`, `debug_status`, `debug_set_breakpoints`, `debug_continue`,
   `debug_pause`, `debug_step`, `debug_threads`, `debug_stack_trace`,
   `debug_scopes`, `debug_variables`, `debug_stop`). `debug_start` is published
@@ -76,9 +82,10 @@ specification and tracked as milestones J0 to J14.
 - Linux (Ubuntu 24.04 LTS or newer is the reference platform), `amd64` first.
 - Go **1.25 or newer** (CI tests `1.25.x` and the current stable release).
 - A C toolchain (`gcc`) for `go test -race` and the C fixtures.
-- Valgrind for the real Memcheck end-to-end tests, GDB and `lldb-dap` for the
-  real debugger tests; those tests skip with a documented reason when Valgrind,
-  GDB, `lldb-dap` or `cc` is unavailable.
+- Valgrind for the real Memcheck/Helgrind/DRD tests, a C toolchain with
+  sanitizer runtimes for ASan/UBSan/LSan/TSan tests, and GDB/`lldb-dap` for the
+  real debugger tests; those tests skip with a documented reason when a tool is
+  unavailable.
 
 Analysis backends have additional requirements (Valgrind, GDB, LLDB, sanitizers,
 `perf`). Their availability is detected at runtime and missing tools hide the
@@ -195,7 +202,8 @@ Capabilities are revalidated every 30 seconds and
 `notifications/tools/list_changed` is emitted when the exposed set changes. All
 payloads carry `schema_version = 1`. See [docs/mcp.md](docs/mcp.md) for schemas,
 error codes and pagination, [docs/valgrind.md](docs/valgrind.md) for the evidence
-format, [docs/diff.md](docs/diff.md) for run comparison, and
+format, [docs/diff.md](docs/diff.md) for run comparison,
+[docs/sanitizers.md](docs/sanitizers.md) for sanitizer runs, and
 [docs/debugger.md](docs/debugger.md) for the GDB/LLDB backends.
 
 ## Repository layout
@@ -210,14 +218,15 @@ internal/runner/              Bounded process execution and cleanup
 internal/artifacts/           Private run directories and atomic writes
 internal/jobs/                Job lifecycle, quotas and result manifests
 internal/diagnostic/          Canonical report, fingerprints and run comparison
-internal/valgrind/            Memcheck options, XML parser and analysis service
+internal/valgrind/            Memcheck/Helgrind/DRD options, XML parser and service
+internal/sanitizer/           ASan/UBSan/LSan/TSan parser, reports and service
 internal/analysis/            Analysis API, named errors, pagination and artifacts
 internal/dap/                 Generic DAP framing, client, state and capabilities
 internal/dap/daptest/         Scripted in-memory DAP adapter for tests
 internal/debugger/            GDB/LLDB process, sessions, manager and debug API
 internal/mcpserver/           MCP server, tool publication, analysis and debug tools
 internal/version/             Build information
-testdata/fixtures/c/          Reviewed C fixtures for Memcheck E2E tests
+testdata/fixtures/c/          Reviewed C, concurrency and sanitizer fixtures
 testdata/fixtures/valgrind/   Static valid/truncated/malformed XML fixtures
 testdata/golden/diff/         Deterministic diff reports and expected output
 tests/e2e/                    Real stdio MCP client/server tests
@@ -227,6 +236,7 @@ docs/configuration.md         Configuration reference
 docs/artifacts.md             Run directory layout and manifests
 docs/valgrind.md              Memcheck pipeline, report schema and limits
 docs/diff.md                  Fingerprint pairing, compatibility and diff semantics
+docs/sanitizers.md            ASan/UBSan/LSan/TSan execution, parsing and limits
 docs/dap.md                   DAP framing, client lifecycle, state and limits
 docs/debugger.md              GDB/LLDB backends, debug API, lifecycle and limits
 docs/mcp.md                   MCP transport, tool discovery and payloads
@@ -237,7 +247,7 @@ scripts/preflight.sh          Read-only machine inventory
 .github/workflows/ci.yml      Continuous integration
 ```
 
-Further analysis packages (`sanitizer`, `profile`, `ctest`, ...) are
+Further analysis packages (`profile`, `ctest`, ...) are
 introduced by their milestones.
 
 ## Development

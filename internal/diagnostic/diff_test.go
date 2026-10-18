@@ -305,3 +305,18 @@ func containsText(values []string, substring string) bool {
 	}
 	return false
 }
+
+func TestCompareDifferentAnalysisToolsAreIncompatible(t *testing.T) {
+	base := diffReport("run_0000000000000000000000000000000d", []Diagnostic{diffDiagnostic("base", "44", 1)})
+	base.Options["tool"] = "memcheck"
+	target := diffReport("run_0000000000000000000000000000000e", []Diagnostic{diffDiagnostic("target", "44", 1)})
+	target.Options["tool"] = "helgrind"
+	_, err := Compare(base, target)
+	var incompatible *IncompatibleError
+	if !errors.As(err, &incompatible) {
+		t.Fatalf("Compare() error = %v, want IncompatibleError", err)
+	}
+	if !strings.Contains(strings.Join(incompatible.Reasons, " "), "analysis tools differ") {
+		t.Errorf("reasons = %v", incompatible.Reasons)
+	}
+}

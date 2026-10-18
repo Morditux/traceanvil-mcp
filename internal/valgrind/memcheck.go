@@ -23,6 +23,7 @@ const AnalysisArtifactName = "analysis.json"
 // the service after it has the job outcome.
 type BuildInput struct {
 	RunID       string
+	Tool        Tool
 	ToolPath    string
 	ToolVersion string
 	Roots       []string
@@ -37,6 +38,10 @@ type BuildInput struct {
 // It never upgrades partial evidence: parse errors, truncation, dropped records
 // and inconsistent summaries all leave AnalysisComplete false.
 func BuildReport(in BuildInput) diagnostic.Report {
+	tool := in.Tool
+	if tool == "" {
+		tool = ToolMemcheck
+	}
 	report := diagnostic.Report{
 		SchemaVersion:    diagnostic.SchemaVersion,
 		RunID:            in.RunID,
@@ -107,11 +112,11 @@ func BuildReport(in BuildInput) diagnostic.Report {
 
 		report.Diagnostics = append(report.Diagnostics, diagnostic.Diagnostic{
 			ID:                   diagnosticID(in.RunID, index),
-			Fingerprint:          diagnostic.FingerprintV2(Origin, kind, stack),
+			Fingerprint:          diagnostic.FingerprintV2(tool.Origin(), kind, stack),
 			FingerprintAlgorithm: diagnostic.FingerprintAlgorithmV2,
-			Origin:               Origin,
+			Origin:               tool.Origin(),
 			Kind:                 kind,
-			Severity:             severityForKind(kind),
+			Severity:             tool.SeverityForKind(kind),
 			Message:              message,
 			Location:             diagnostic.SelectLocation(stack),
 			Stack:                stack,
@@ -121,7 +126,7 @@ func BuildReport(in BuildInput) diagnostic.Report {
 			LeakedBytes:          raw.LeakedBytes,
 			LeakedBlocks:         raw.LeakedBlocks,
 			Evidence: diagnostic.Evidence{
-				Artifact:    RawArtifactName,
+				Artifact:    tool.RawArtifactName(),
 				RecordID:    strings.TrimSpace(raw.Unique),
 				RecordIndex: index,
 				RawKind:     raw.Kind,

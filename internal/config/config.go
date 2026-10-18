@@ -32,6 +32,7 @@ const (
 
 	MaxSuppressionProfiles  = 32
 	MaxSuppressionFileBytes = 1 << 20
+	MaxSanitizersPerTarget  = 4
 )
 
 // Defaults applied when a limit is omitted (zero).
@@ -61,6 +62,16 @@ const (
 
 var targetIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 
+// ValidSanitizer reports whether a target sanitizer declaration is supported.
+func ValidSanitizer(name string) bool {
+	switch name {
+	case "asan", "ubsan", "lsan", "tsan":
+		return true
+	default:
+		return false
+	}
+}
+
 // Config is the root of the configuration document.
 type Config struct {
 	SchemaVersion  int      `json:"schema_version"`
@@ -86,13 +97,19 @@ type Target struct {
 	Program     string   `json:"program"`
 	Cwd         string   `json:"cwd"`
 	AllowedArgs []string `json:"allowed_args"`
+	// Sanitizers declares the sanitizer runtimes the target binary was built
+	// with. The server does not build or instrument targets; this is an
+	// administrator trust declaration used to validate the per-sanitizer run
+	// tools.
+	Sanitizers []string `json:"sanitizers,omitempty"`
 }
 
 // Backends records which external backends are enabled by configuration.
 type Backends struct {
-	Valgrind bool `json:"valgrind"`
-	GDB      bool `json:"gdb"`
-	LLDB     bool `json:"lldb"`
+	Valgrind   bool `json:"valgrind"`
+	GDB        bool `json:"gdb"`
+	LLDB       bool `json:"lldb"`
+	Sanitizers bool `json:"sanitizers"`
 }
 
 // Policy records the trust profile and explicit elevated permissions.
@@ -255,6 +272,21 @@ func (c *Config) Validate() error {
 		if len(target.AllowedArgs) > MaxAllowedArgs {
 			return fieldError(field+".allowed_args", "at most %d arguments are allowed", MaxAllowedArgs)
 		}
+		if len(target.Sanitizers) > MaxSanitizersPerTarget {
+			return fieldError(field+".sanitizers", "at most %d sanitizer declarations are allowed", MaxSanitizersPerTarget)
+		}
+		seenSanitizers := make(map[string]struct{}, len(target.Sanitizers))
+		for j, name := range target.Sanitizers {
+			sanitizerField := fmt.Sprintf("%s.sanitizers[%d]", field, j)
+			if !ValidSanitizer(name) {
+				return fieldError(sanitizerField, "must be one of asan, ubsan, lsan or tsan")
+			}
+			if _, duplicate := seenSanitizers[name]; duplicate {
+				return fieldError(sanitizerField, "duplicate sanitizer %q", name)
+			}
+			seenSanitizers[name] = struct{}{}
+		}
+
 		for j, arg := range target.AllowedArgs {
 			argField := fmt.Sprintf("%s.allowed_args[%d]", field, j)
 			if strings.ContainsRune(arg, 0) {

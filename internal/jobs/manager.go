@@ -213,6 +213,7 @@ func (m *Manager) newJobLocked(runDir *artifacts.RunDir, spec Spec) *Job {
 	job := &Job{
 		runID:     runDir.ID(),
 		targetID:  spec.TargetID,
+		tool:      spec.Tool,
 		createdAt: time.Now().UTC(),
 		state:     StateQueued,
 		ctx:       jobCtx,

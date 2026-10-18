@@ -15,9 +15,9 @@ func validJSON() string {
 		"workspace_roots": ["/tmp/ws"],
 		"report_dir": "/tmp/ws-reports",
 		"allowed_targets": [
-			{"id": "fixture", "program": "/tmp/ws/build/fixture", "cwd": "/tmp/ws", "allowed_args": ["--one"]}
+			{"id": "fixture", "program": "/tmp/ws/build/fixture", "cwd": "/tmp/ws", "allowed_args": ["--one"], "sanitizers": ["asan", "tsan"]}
 		],
-		"backends": {"valgrind": true, "gdb": false, "lldb": false},
+		"backends": {"valgrind": true, "gdb": false, "lldb": false, "sanitizers": true},
 		"policy": {"profile": "safe-default", "attach": false, "evaluate": false},
 		"limits": {"timeout_seconds": 60, "max_jobs": 1, "max_sessions": 1,
 		           "max_report_bytes": 4096, "max_response_items": 10}
@@ -36,8 +36,11 @@ func TestParseValid(t *testing.T) {
 	if got := cfg.AllowedTargets[0].Program; got != "/tmp/ws/build/fixture" {
 		t.Errorf("Program = %q, want the cleaned absolute path", got)
 	}
-	if !cfg.Backends.Valgrind || cfg.Backends.GDB || cfg.Backends.LLDB {
-		t.Errorf("backends = %+v, want valgrind only", cfg.Backends)
+	if !cfg.Backends.Valgrind || cfg.Backends.GDB || cfg.Backends.LLDB || !cfg.Backends.Sanitizers {
+		t.Errorf("backends = %+v, want valgrind and sanitizers only", cfg.Backends)
+	}
+	if len(cfg.AllowedTargets[0].Sanitizers) != 2 {
+		t.Errorf("sanitizers = %v", cfg.AllowedTargets[0].Sanitizers)
 	}
 	if cfg.Policy.Profile != ProfileSafeDefault {
 		t.Errorf("Profile = %q, want %q", cfg.Policy.Profile, ProfileSafeDefault)
@@ -200,6 +203,16 @@ func TestValidateErrors(t *testing.T) {
 			name:    "argument too long",
 			mutate:  func(c *Config) { c.AllowedTargets[0].AllowedArgs = []string{strings.Repeat("a", MaxArgBytes+1)} },
 			wantErr: "at most",
+		},
+		{
+			name:    "unknown sanitizer",
+			mutate:  func(c *Config) { c.AllowedTargets[0].Sanitizers = []string{"msan"} },
+			wantErr: "asan, ubsan, lsan or tsan",
+		},
+		{
+			name:    "duplicate sanitizer",
+			mutate:  func(c *Config) { c.AllowedTargets[0].Sanitizers = []string{"asan", "asan"} },
+			wantErr: "duplicate sanitizer",
 		},
 		{
 			name:    "invalid profile",

@@ -14,8 +14,10 @@ when all of the following hold:
 3. local policy permits the operation;
 4. the required capability is `available`.
 
-`analysis_start` additionally requires `backend.valgrind = available` because it
-launches a target. The five evidence/report tools (`analysis_status`,
+`analysis_start` (Memcheck), `helgrind_run` and `drd_run` require their
+respective `backend.valgrind*` capability. `asan_run`, `ubsan_run`, `lsan_run`
+and `tsan_run` each require `backend.sanitizer.<tool>` and a target declaration
+matching that sanitizer. The five evidence/report tools (`analysis_status`,
 `analysis_cancel`, `analysis_report`, `analysis_artifact`, `diagnostics_diff`)
 are always published when the analysis service is running: they never launch a
 program and remain usable for an in-flight run or a run persisted by a previous
@@ -41,7 +43,13 @@ support dynamic lists must reconnect.
 | Tool | Launches a program | Requires | Read-only |
 |---|---|---|---|
 | `system_capabilities` | no | — | yes |
-| `analysis_start` | **yes**, an allowlisted target under Valgrind | `backend.valgrind` | no |
+| `analysis_start` | **yes**, an allowlisted target under Memcheck | `backend.valgrind` | no |
+| `helgrind_run` | **yes**, an allowlisted target under Helgrind | `backend.valgrind.helgrind` | no |
+| `drd_run` | **yes**, an allowlisted target under DRD | `backend.valgrind.drd` | no |
+| `asan_run` | **yes**, a target declared as built with ASan | `backend.sanitizer.asan` + target declaration | no |
+| `ubsan_run` | **yes**, a target declared as built with UBSan | `backend.sanitizer.ubsan` + target declaration | no |
+| `lsan_run` | **yes**, a target declared as built with LSan | `backend.sanitizer.lsan` + target declaration | no |
+| `tsan_run` | **yes**, a target declared as built with TSan | `backend.sanitizer.tsan` + target declaration | no |
 | `analysis_status` | no | — | yes |
 | `analysis_cancel` | no (signals a run started by this server) | — | no |
 | `analysis_report` | no | — | yes |
@@ -61,7 +69,7 @@ support dynamic lists must reconnect.
 
 ## Shared conventions
 
-- Every payload has a `schema_version` (`1` at J4–J8). It changes only for an
+- Every payload has a `schema_version` (`1` at J4–J9). It changes only for an
   incompatible shape change; additive fields keep the version.
 - `run_id` is an opaque `run_<32 lowercase hex>` identifier. It is not a path.
 - `session_id` is an opaque `dbg_<32 lowercase hex>` identifier. It is not a
@@ -241,7 +249,9 @@ Cancellation never changes partial evidence into a clean result.
 
 ## `analysis_report`
 
-Returns a compact summary plus one bounded page of diagnostics.
+Returns a compact summary plus one bounded page of diagnostics. The response
+carries `analysis_tool` (`memcheck`, `helgrind`, `drd`, `asan`, …), while
+`tool` remains the engine identity (`valgrind`, `asan`, …).
 
 **Input**
 
@@ -325,6 +335,27 @@ filters or another run returns `invalid_cursor`.
 - The `summary` is always the full report summary, independent of filters and
   pagination.
 
+## Concurrency analysis: `helgrind_run` and `drd_run`
+
+Both tools launch the declared target through Valgrind and return a normal
+`analysis_status`-shaped run handle. Their input is `target_id`, `args[]` and
+`timeout_ms`; they accept no path, shell command or free-form Valgrind flags.
+`helgrind_run` and `drd_run` are gated on separate capabilities. A clean run is
+not proof that no race exists; concurrency scheduling varies between runs.
+
+## Sanitizer tools: `asan_run`, `ubsan_run`, `lsan_run`, `tsan_run`
+
+Each launches a target that configuration explicitly declares as built with the
+same sanitizer. The server does not instrument binaries. `analysis_complete`
+describes the evidence/invocation, not a claim that the program is race-free or
+leak-free. See [sanitizers.md](sanitizers.md).
+
+Input: `target_id`, `args[]`, `timeout_ms`. The target's `sanitizers`
+configuration must include the requested value. The raw evidence is
+`sanitizer.log`, exposed as artifact type `raw_log`; target stderr is a separate
+`stderr` artifact and is not parsed as sanitizer evidence. Each tool is gated by
+its own `backend.sanitizer.<tool>` capability.
+
 ## `diagnostics_diff`
 
 Compares two persisted reports by versioned fingerprint and returns bounded
@@ -383,10 +414,11 @@ path is returned and no arbitrary file can be requested.** Input fields:
 
 | `artifact_type` | File | Contents |
 |---|---|---|
-| `raw_xml` | `memcheck.xml` | Raw Valgrind XML evidence. |
+| `raw_xml` | `memcheck.xml`, `helgrind.xml`, `drd.xml` | Raw Valgrind XML evidence. |
+| `raw_log` | `sanitizer.log` | Sanitizer-owned runtime log. |
 | `analysis_report` | `analysis.json` | Canonical normalized report. |
 | `stdout` | `stdout.log` | Bounded target/Valgrind stdout. |
-| `stderr` | `stderr.log` | Bounded target/Valgrind stderr. |
+| `stderr` | `stderr.log` | Bounded target/Valgrind stderr; not parsed as sanitizer evidence. |
 | `job_manifest` | `result.json` | Execution manifest. |
 
 **Output**
@@ -633,7 +665,7 @@ difference matrix, session lifecycle and limits.
 | `unknown_tool` | Tool not implemented by this build. |
 | `tool_disabled` | Analysis tool disabled by configuration. |
 | `backend_disabled` | Debugger/backend disabled by configuration. |
-| `backend_unavailable` | Backend missing, unusable or not functionally verified. |
+| `backend_unavailable` | Backend missing, unusable, not functionally verified, or sanitizer target declaration absent. |
 | `target_unknown` | `target_id` is not declared in configuration. |
 | `policy_denied` | Target or arguments denied by local policy. |
 | `quota_exceeded` | Concurrency, artifact or collection quota exhausted. |

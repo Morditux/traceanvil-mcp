@@ -60,6 +60,7 @@ func (e *BackendError) Is(target error) bool { return target == ErrBackendUnavai
 // values that exceed its own limit.
 type Request struct {
 	TargetID string
+	Tool     Tool
 	Args     []string
 	Options  *Options
 	Timeout  time.Duration
@@ -207,14 +208,16 @@ const (
 // AnalysisSnapshot is a consistent view of one analysis.
 type AnalysisSnapshot struct {
 	RunID  string             `json:"run_id"`
+	Tool   Tool               `json:"tool,omitempty"`
 	Phase  Phase              `json:"phase"`
 	Report *diagnostic.Report `json:"report,omitempty"`
 	Error  string             `json:"error,omitempty"`
 }
 
-// Analysis is a handle to one asynchronous Memcheck run.
+// Analysis is a handle to one asynchronous Valgrind run.
 type Analysis struct {
 	id   string
+	tool Tool
 	job  *jobs.Job
 	done chan struct{}
 
@@ -231,7 +234,7 @@ func (a *Analysis) ID() string { return a.id }
 func (a *Analysis) Snapshot() AnalysisSnapshot {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return AnalysisSnapshot{RunID: a.id, Phase: a.phase, Report: a.report, Error: errorString(a.err)}
+	return AnalysisSnapshot{RunID: a.id, Tool: a.tool, Phase: a.phase, Report: a.report, Error: errorString(a.err)}
 }
 
 // Wait blocks until the analysis and its post-processing finish. A report may
@@ -303,11 +306,19 @@ func (s *Service) Start(ctx context.Context, req Request) (*Analysis, error) {
 		return nil, ErrClosed
 	}
 
+	tool := req.Tool
+	if tool == "" {
+		tool = ToolMemcheck
+	}
+	if !tool.Valid() {
+		return nil, &OptionError{Field: "tool", Reason: "is not implemented"}
+	}
 	opts := DefaultOptions()
+	opts.Tool = tool
 	if req.Options != nil {
 		opts = *req.Options
 	}
-	if err := opts.Validate(); err != nil {
+	if err := opts.ValidateFor(tool); err != nil {
 		return nil, err
 	}
 
@@ -333,8 +344,9 @@ func (s *Service) Start(ctx context.Context, req Request) (*Analysis, error) {
 	if err != nil {
 		return nil, err
 	}
-	xmlPath := filepath.Join(runDir.Path(), RawArtifactName)
-	args, err := opts.Arguments(xmlPath, suppressionPath, resolved.Program, resolved.Args)
+	rawName := tool.RawArtifactName()
+	xmlPath := filepath.Join(runDir.Path(), rawName)
+	args, err := opts.ArgumentsFor(tool, xmlPath, suppressionPath, resolved.Program, resolved.Args)
 	if err != nil {
 		_ = s.store.Remove(runDir.ID())
 		return nil, err
@@ -349,6 +361,7 @@ func (s *Service) Start(ctx context.Context, req Request) (*Analysis, error) {
 	}
 	job, err := s.manager.StartInDir(ctx, runDir, jobs.Spec{
 		TargetID:   resolved.TargetID,
+		Tool:       string(tool),
 		Executable: binary,
 		Args:       args,
 		Dir:        resolved.Dir,
@@ -363,6 +376,7 @@ func (s *Service) Start(ctx context.Context, req Request) (*Analysis, error) {
 
 	analysis := &Analysis{
 		id:    runDir.ID(),
+		tool:  tool,
 		job:   job,
 		done:  make(chan struct{}),
 		phase: PhaseQueued,
@@ -371,7 +385,7 @@ func (s *Service) Start(ctx context.Context, req Request) (*Analysis, error) {
 	s.wg.Add(1)
 	s.mu.Unlock()
 
-	go s.analyze(analysis, runDir, xmlPath, binary, version, resolved, programHash, programInfo, opts, startedAt)
+	go s.analyze(analysis, runDir, xmlPath, rawName, tool, binary, version, resolved, programHash, programInfo, opts, startedAt)
 	return analysis, nil
 }
 
@@ -417,6 +431,8 @@ func (s *Service) analyze(
 	analysis *Analysis,
 	runDir *artifacts.RunDir,
 	xmlPath string,
+	rawName string,
+	tool Tool,
 	binaryPath string,
 	toolVersion string,
 	target policy.Resolved,
@@ -445,12 +461,12 @@ func (s *Service) analyze(
 		// Adopt reads 0 as "no caller limit"; a negative limit keeps nothing.
 		rawLimit = -1
 	}
-	adopted, adoptErr := runDir.Adopt(RawArtifactName, rawLimit)
+	adopted, adoptErr := runDir.Adopt(rawName, rawLimit)
 	var xmlResult *XMLResult
 	var parseErr error
 	var rawDigest string
 	if adoptErr == nil {
-		file, err := runDir.OpenRead(RawArtifactName)
+		file, err := runDir.OpenRead(rawName)
 		if err != nil {
 			parseErr = err
 		} else {
@@ -465,7 +481,7 @@ func (s *Service) analyze(
 	}
 
 	artifact := diagnostic.Artifact{
-		Name:      RawArtifactName,
+		Name:      rawName,
 		Kind:      "raw_xml",
 		Bytes:     adopted.Bytes,
 		Truncated: adopted.Truncated || rawExceeded.Load(),
@@ -488,6 +504,7 @@ func (s *Service) analyze(
 
 	buildInput := BuildInput{
 		RunID:       analysis.id,
+		Tool:        tool,
 		ToolPath:    binaryPath,
 		ToolVersion: toolVersion,
 		Roots:       s.roots,
@@ -508,7 +525,7 @@ func (s *Service) analyze(
 	report.Metadata.EndTime = formatTime(snapshot.FinishedAt)
 	report.Metadata.DurationMS = program.DurationMS
 
-	result, complete, warnings := classifyAnalysis(snapshot, xmlResult, parseErr, adoptErr, artifact.Truncated, report.AnalysisComplete)
+	result, complete, warnings := classifyAnalysis(snapshot, xmlResult, tool, parseErr, adoptErr, artifact.Truncated, report.AnalysisComplete)
 	report.Result = result
 	report.AnalysisComplete = report.AnalysisComplete && complete
 	report.Warnings = append(report.Warnings, warnings...)
@@ -625,7 +642,7 @@ func phaseFromSnapshot(snapshot jobs.Snapshot) Phase {
 	}
 }
 
-func classifyAnalysis(snapshot jobs.Snapshot, xml *XMLResult, parseErr, adoptErr error, rawTruncated, buildComplete bool) (diagnostic.Result, bool, []string) {
+func classifyAnalysis(snapshot jobs.Snapshot, xml *XMLResult, tool Tool, parseErr, adoptErr error, rawTruncated, buildComplete bool) (diagnostic.Result, bool, []string) {
 	var warnings []string
 	if snapshot.Result == nil {
 		return diagnostic.ResultToolError, false, []string{"program result is missing"}
@@ -652,14 +669,14 @@ func classifyAnalysis(snapshot jobs.Snapshot, xml *XMLResult, parseErr, adoptErr
 		}
 		return diagnostic.ResultToolError, false, warnings
 	}
-	if xml.ProtocolTool != "" && xml.ProtocolTool != ProtocolTool {
+	if xml.ProtocolTool != "" && xml.ProtocolTool != string(tool) {
 		return diagnostic.ResultToolError, false, []string{
-			"Valgrind XML belongs to tool " + xml.ProtocolTool + ", not memcheck",
+			"Valgrind XML belongs to tool " + xml.ProtocolTool + ", not " + string(tool),
 		}
 	}
-	if xml.Tool != "" && xml.Tool != ProtocolTool {
+	if xml.Tool != "" && xml.Tool != string(tool) {
 		return diagnostic.ResultToolError, false, []string{
-			"Valgrind XML tool element is " + xml.Tool + ", not memcheck",
+			"Valgrind XML tool element is " + xml.Tool + ", not " + string(tool),
 		}
 	}
 	if parseErr != nil {

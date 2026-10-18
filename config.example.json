@@ -17,7 +17,8 @@
   "backends": {
     "valgrind": true,
     "gdb": true,
-    "lldb": false
+    "lldb": false,
+    "sanitizers": false
   },
   "policy": {
     "profile": "safe-default",

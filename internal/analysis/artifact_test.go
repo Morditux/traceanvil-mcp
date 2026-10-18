@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Morditux/traceanvil-mcp/internal/jobs"
 	"github.com/Morditux/traceanvil-mcp/internal/valgrind"
 )
 
@@ -327,4 +329,28 @@ func TestArtifactExcerptMakesForwardProgressOnTinyRuneWindow(t *testing.T) {
 	if !output.InvalidUTF8Replaced {
 		t.Error("invalid_utf8_replaced = false for a split rune")
 	}
+}
+
+func TestRawXMLArtifactUsesManifestToolWithoutFallback(t *testing.T) {
+	store := newTestStore(t)
+	service := newTestService(t, store, newFakeBackend(), nil)
+	runDir := createRunDir(t, store)
+	if err := runDir.WriteFileAtomic("memcheck.xml", []byte("<memcheck/>")); err != nil {
+		t.Fatal(err)
+	}
+	manifest := jobs.Snapshot{
+		SchemaVersion: jobs.SchemaVersion, RunID: runDir.ID(), TargetID: "fixture",
+		Tool: ToolHelgrind, State: jobs.StateFailed,
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runDir.WriteFileAtomic(jobs.ManifestName, data); err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Artifact(context.Background(), ArtifactRequest{
+		RunID: runDir.ID(), ArtifactType: ArtifactRawXML,
+	})
+	mustCode(t, err, CodeArtifactUnavailable)
 }

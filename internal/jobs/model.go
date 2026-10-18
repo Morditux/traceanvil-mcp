@@ -25,7 +25,11 @@ const (
 
 // Spec describes one execution request after policy resolution.
 type Spec struct {
-	TargetID   string
+	TargetID string
+	// Tool identifies the analysis/backend tool that owns the job. It is
+	// optional for raw execution jobs and lets status readers retain tool
+	// identity when a normalized report is unavailable.
+	Tool       string
 	Executable string
 	Args       []string
 	Dir        string
@@ -58,6 +62,7 @@ type Snapshot struct {
 	SchemaVersion int        `json:"schema_version"`
 	RunID         string     `json:"run_id"`
 	TargetID      string     `json:"target_id"`
+	Tool          string     `json:"tool,omitempty"`
 	State         State      `json:"state"`
 	CreatedAt     time.Time  `json:"created_at"`
 	StartedAt     *time.Time `json:"started_at,omitempty"`
@@ -72,6 +77,7 @@ type Job struct {
 
 	runID     string
 	targetID  string
+	tool      string
 	createdAt time.Time
 
 	state      State
@@ -146,6 +152,7 @@ func (j *Job) snapshotLocked(finishedAt time.Time, state State, result *Result, 
 		SchemaVersion: SchemaVersion,
 		RunID:         j.runID,
 		TargetID:      j.targetID,
+		Tool:          j.tool,
 		State:         state,
 		CreatedAt:     j.createdAt,
 		Error:         errText,

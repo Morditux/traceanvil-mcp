@@ -419,3 +419,27 @@ func TestStatusWarningsDoNotLeakReportPaths(t *testing.T) {
 		}
 	}
 }
+
+func TestStatusFromManifestKeepsToolIdentity(t *testing.T) {
+	store := newTestStore(t)
+	service := newTestService(t, store, newFakeBackend(), nil)
+	manifest := jobs.Snapshot{
+		SchemaVersion: jobs.SchemaVersion,
+		RunID:         "run_00000000000000000000000000000023",
+		TargetID:      "fixture",
+		Tool:          ToolHelgrind,
+		State:         jobs.StateFailed,
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFilesAt(t, store, manifest.RunID, map[string][]byte{jobs.ManifestName: data})
+	status, err := service.Status(context.Background(), StatusRequest{RunID: manifest.RunID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Tool != ToolHelgrind {
+		t.Errorf("tool = %q, want helgrind", status.Tool)
+	}
+}

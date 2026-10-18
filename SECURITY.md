@@ -21,7 +21,7 @@ Use GitHub's private vulnerability reporting on this repository
 You will receive an acknowledgement and a remediation plan. Please allow time for
 a fix before public disclosure.
 
-## Current surface (J8)
+## Current surface (J9)
 
 - `serve` starts an MCP server over stdin/stdout. stdout carries only JSON-RPC
   messages; logs and errors go to stderr.
@@ -31,6 +31,17 @@ a fix before public disclosure.
   sends a configured `target_id`, never a path or shell string. Only the
   allowlisted Memcheck option surface is accepted; `trace_children=true` is
   rejected.
+- `helgrind_run` and `drd_run` launch a declared target under Valgrind
+  concurrency tools. Their XML is treated as untrusted and parsed with the same
+  byte/depth/record/frame/string bounds. Race reports are non-deterministic; a
+  clean run is not proof that no race exists.
+- `asan_run`, `ubsan_run`, `lsan_run` and `tsan_run` launch a target only when
+  the target configuration explicitly declares the matching sanitizer. The
+  server does not compile or instrument binaries and does not infer
+  instrumentation from a filename. Sanitizer runtime output is captured through
+  a fixed `log_path` file and parsed as untrusted text; target stderr is never
+  treated as sanitizer evidence. A clean concurrency run is not proof of
+  absence.
 - `analysis_status`, `analysis_report`, `analysis_artifact` and
   `diagnostics_diff` are read-only and never launch a program. `analysis_cancel`
   only signals a run that this server process owns or acknowledges that a
@@ -47,7 +58,7 @@ a fix before public disclosure.
   `stat` for path checks and never executes a target.
 - Capability probes run at startup and every 30 seconds. They resolve enabled
   backend executables with `PATH`, run `--version`, and for Valgrind additionally
-  run `--tool=memcheck --help` to verify Memcheck/XML support. The GDB probe
+  run tool-specific `--help` checks for Memcheck, Helgrind and DRD XML support. The GDB probe
   launches `gdb --quiet --nx --interpreter=dap` with the same hardening commands
   used by sessions and a private `HOME`, sends one DAP `initialize` request,
   records the negotiated capabilities and closes the process; it never loads a
@@ -55,11 +66,18 @@ a fix before public disclosure.
   The LLDB probe discovers `lldb-dap` and versioned `lldb-dap-<N>` executables in
   absolute PATH directories, launches the adapter with fixed init/security
   settings and a private `HOME`, and verifies a DAP `initialize` handshake
-  without loading a target. Probes are bounded (5-second timeout, bounded output,
-  minimal environment), never run a user program and never use sudo. Relative
-  `PATH` entries are rejected.
-- `analysis_start` is published only while `backend.valgrind` is `available`.
-  Backend availability is revalidated at invocation and the Valgrind binary is
+  without loading a target. Each sanitizer capability is configuration-only: it
+  is available when the backend is enabled and at least one usable target
+  declares that sanitizer build. It does not prove the runtime is present; the declaration is
+  an administrator trust statement and the corresponding `<tool>_run` revalidates
+  it. Probes are
+  bounded (5-second timeout, bounded output, minimal environment), never run a
+  user program and never use sudo. Relative `PATH` entries are rejected.
+- `analysis_start` is published only while `backend.valgrind` is `available`;
+  `helgrind_run`/`drd_run` use their own tool capabilities and each sanitizer
+  tool requires its own `backend.sanitizer.<tool>` capability plus a matching
+  target declaration. Backend
+  availability is revalidated at invocation and the Valgrind binary is
   revalidated immediately before each run. The evidence tools stay published so
   an in-flight or persisted run remains queryable if the backend disappears.
 - `debug_start` launches a declared target under GDB or LLDB. It accepts a
@@ -110,6 +128,12 @@ a fix before public disclosure.
   `supportTerminateDebuggee`, but no detach path was proven to preserve the
   inferior (the GDB test failed). `debug_stop(terminate=true)` never relies
   solely on that capability.
+- Analysis artifacts are logical types only. Valgrind raw XML and sanitizer
+  `sanitizer.log` logs are opened through the artifact store with `O_NOFOLLOW`
+  and bounded excerpts; no filesystem path is returned. A hostile target runs as
+  the same user and can still write into the report tree; `log_path` improves
+  provenance against accidental noise, not against a malicious same-user
+  process. System isolation is required for hostile targets.
 - Debugger responses omit instruction pointers, module paths, raw memory
   references, debuggee terminal I/O and external source paths. Bounded adapter
   error/stderr text may contain local paths, but not file contents. Workspace stack

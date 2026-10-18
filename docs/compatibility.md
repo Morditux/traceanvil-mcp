@@ -1,8 +1,8 @@
 # Compatibility inventory
 
 Recorded on 2026-10-18 from a **read-only** inspection of the reference development
-machine and refreshed at J8 from a read-only inspection plus real GDB/LLDB
-and deterministic diff tests.
+machine and refreshed at J9 from a read-only inspection plus real GDB/LLDB,
+Helgrind/DRD and ASan/UBSan/LSan/TSan tests.
 Re-run `./scripts/preflight.sh` after changing the toolchain and update this
 table; CI runners may differ.
 
@@ -44,11 +44,11 @@ Transitive modules are pinned in `go.sum`. `./scripts/check.sh` runs
 | cmake / ctest | available (4.2.3) | CTest integration possible | J10 |
 | gdb | available (17.1); DAP `initialize` verified | `backend.gdb` becomes `available`; GDB debug sessions are exposed while it remains available | J6 |
 | gdbserver | available (17.1); not probed | remote/`vgdb` scenarios possible but experimental | J13 |
-| valgrind | available (3.26.0); Memcheck XML probe passes | Memcheck pipeline and `analysis_start` exposed while the capability is available | J3/J4 |
+| valgrind | available (3.26.0); Memcheck, Helgrind and DRD XML probes pass | Memcheck pipeline, `helgrind_run` and `drd_run` exposed while their capabilities are available | J3/J4/J9 |
 | vgdb | available (Valgrind 3.26.0); not probed | experimental scenarios deferred | J13 |
 | callgrind_annotate / ms_print | available (3.26.0) | Callgrind/Massif summaries possible | J12 |
 | lldb / lldb-dap | available (21.1.8); `lldb-dap` and `lldb-dap-21` discovered; DAP `initialize` verified | `backend.lldb` becomes `available`; LLDB debug sessions are exposed while it remains available | J7 |
-| clang / clang++ | available (21.1.8) | sanitizer fixtures possible | J9 |
+| clang / clang++ | available (21.1.8); GCC 15.2 sanitizer runtimes tested | ASan, UBSan, LSan and TSan fixtures and real runs possible | J9 |
 | ninja | available (1.13.2) | optional CMake generator | J10 |
 | shellcheck | available (0.11.0) | optional script linting | — |
 | perf | present, but `perf_event_paranoid=4` | profiling remains experimental and must report the restriction | J13 |
@@ -56,10 +56,11 @@ Transitive modules are pinned in `go.sum`. `./scripts/check.sh` runs
 
 Suggested explicit installation (human decision, never performed by the server):
 
-At J8, Valgrind, GDB, LLDB, Clang, Ninja, ShellCheck, gdbserver,
+At J9, Valgrind, GDB, LLDB, Clang, Ninja, ShellCheck, gdbserver,
 `callgrind_annotate` and `ms_print` are installed. No package was installed for
-J8; the real GDB/LLDB tests use the existing GDB 17.1 and LLDB 21.1.8 packages.
-The diff tests are deterministic and need no additional toolchain.
+J9; the real GDB/LLDB tests use the existing GDB 17.1 and LLDB 21.1.8 packages,
+and the sanitizer tests use the existing GCC 15.2 sanitizer runtimes. The diff
+tests are deterministic and need no additional toolchain.
 
 `lldb-dap` is shipped here as both `lldb-dap` and `lldb-dap-21`; discovery handles
 both names, prefers the unsuffixed adapter, orders versioned candidates newest
@@ -80,17 +81,21 @@ Read only; the project never modifies these values.
 - The server starts and serves `system_capabilities` regardless of backend
   availability.
 - On this machine `backend.valgrind` is `available`, so `analysis_start` is
-  published; `backend.gdb` is also `available` after a real DAP `initialize`, so
-  `debug_start` is published while at least one declared target currently
-  resolves, and the debug action tools are published while at least one debugger
-  backend is available. `backend.lldb` is also `available` after its DAP
-  handshake and versioned discovery. `helgrind_run`, `drd_run`,
-  `profile_callgrind`, `profile_massif` and `profile_perf` must **not** appear in
-  `tools/list` at J8. The analysis evidence tools, `diagnostics_diff` and debug
-  management tools stay published where documented.
+  published; `backend.valgrind.helgrind` and `backend.valgrind.drd` are also
+  `available`, so `helgrind_run` and `drd_run` are published. `backend.gdb` is
+  available after a real DAP `initialize`, so `debug_start` is published while at
+  least one declared target currently resolves, and the debug action tools are
+  published while at least one debugger backend is available. `backend.lldb` is
+  also available after its DAP handshake and versioned discovery.
+  Each `backend.sanitizer.<tool>` capability is configuration-only and is
+  `unavailable` unless a usable target declares that sanitizer; the matching
+  `<tool>_run` tool must not appear without such a declaration. The analysis
+  evidence tools, `diagnostics_diff` and debug management tools stay published
+  where documented.
 - `backend.valgrind` is `available` after the functional Memcheck/XML help probe;
-  every run revalidates the binary, and a capability refresh removes
-  `analysis_start` if the backend disappears. The GDB probe launches `gdb
+  Helgrind and DRD each require their own fixed tool-help probe. Every run
+  revalidates the binary, and a capability refresh removes the corresponding run
+  tool if the backend disappears. The GDB probe launches `gdb
   --quiet --nx --interpreter=dap`, completes `initialize`, records capabilities
   and closes the process; it never loads a target. Every debug start revalidates
   the binary and target policy. The LLDB probe discovers `lldb-dap` and

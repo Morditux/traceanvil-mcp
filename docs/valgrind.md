@@ -271,3 +271,28 @@ The integration suite compiles the C fixtures under
 Valgrind. It skips, with a documented reason, when `valgrind` or `cc` is not
 installed (for example in the standard CI runner). Parser tests always run and
 include a fuzz target.
+
+## Helgrind and DRD (J9)
+
+The same bounded XML parser and job pipeline run Valgrind with `--tool=helgrind`
+or `--tool=drd`. No memcheck-specific leak options are passed. The report tool
+name remains `valgrind`, while `options.tool` records `helgrind` or `drd`;
+diagnostic origins are `valgrind-helgrind` and `valgrind-drd`.
+
+| Tool | Error kinds | Severity policy |
+|---|---|---|
+| Helgrind | `Race`, `LockOrder` | `error` |
+| Helgrind | `UnlockUnlocked`, `UnlockForeign`, `UnlockBogus`, `PthAPIerror`, `Misc` | `warning` |
+| DRD | `ConflictingAccess` | `error` |
+| DRD | `ThreadErr`, `MutexErr`, `CondErr`, `BarrierErr`, `RWLockErr`, `Holdtime`, `OtherErr` | `warning` |
+| either | unknown kind | `warning`, preserved as reported |
+
+Suppressed reports are counted and warned about; they are not treated as
+resolved. A report with no race is not evidence that no race exists:
+concurrency scheduling is non-deterministic, so a clean run is only
+`no_errors_observed` for that invocation. Use repeated runs and the diff tool to
+compare observations.
+
+The capability probes verify `--tool=helgrind --help` and `--tool=drd --help`
+without loading a target. `helgrind_run` and `drd_run` are published only while
+their own capabilities are available; `analysis_start` remains Memcheck-only.

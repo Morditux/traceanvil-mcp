@@ -291,6 +291,13 @@ func compareMetadata(base, target Report) (algorithm string, hard, changes, unce
 	if base.Tool.Name != target.Tool.Name {
 		hard = append(hard, fmt.Sprintf("tool names differ (%q vs %q)", base.Tool.Name, target.Tool.Name))
 	}
+	baseTool := reportAnalysisTool(base)
+	targetTool := reportAnalysisTool(target)
+	if baseTool != "" && targetTool != "" && baseTool != targetTool {
+		hard = append(hard, fmt.Sprintf("analysis tools differ (%q vs %q)", baseTool, targetTool))
+	} else if baseTool == "" || targetTool == "" {
+		uncertainties = append(uncertainties, "one report has no analysis-tool metadata")
+	}
 	if base.Program.TargetID != "" && target.Program.TargetID != "" && base.Program.TargetID != target.Program.TargetID {
 		hard = append(hard, fmt.Sprintf("target ids differ (%q vs %q)", base.Program.TargetID, target.Program.TargetID))
 	} else if base.Program.TargetID == "" || target.Program.TargetID == "" {
@@ -466,6 +473,20 @@ func limitUTF8String(value string, limit int) string {
 		limit--
 	}
 	return value[:limit]
+}
+
+func reportAnalysisTool(report Report) string {
+	if value, ok := report.Options["tool"].(string); ok && value != "" {
+		return value
+	}
+	if report.Tool.Name == "valgrind" {
+		// Pre-J9 Valgrind reports predate options.tool and are Memcheck.
+		return "memcheck"
+	}
+	if report.Tool.Name != "" {
+		return report.Tool.Name
+	}
+	return ""
 }
 
 func firstDiagnosticAlgorithm(diagnostics []Diagnostic) string {

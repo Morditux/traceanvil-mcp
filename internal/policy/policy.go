@@ -17,10 +17,11 @@ import (
 
 // Resolved is a target that passed every runtime check.
 type Resolved struct {
-	TargetID string
-	Program  string
-	Dir      string
-	Args     []string
+	TargetID   string
+	Program    string
+	Dir        string
+	Args       []string
+	Sanitizers []string
 }
 
 // ReasonUnknownTarget is the machine-readable reason used when the target id
@@ -119,10 +120,11 @@ func (r *Resolver) Resolve(targetID string, args []string) (Resolved, error) {
 	}
 
 	return Resolved{
-		TargetID: targetID,
-		Program:  program,
-		Dir:      dir,
-		Args:     append([]string(nil), args...),
+		TargetID:   targetID,
+		Program:    program,
+		Dir:        dir,
+		Args:       append([]string(nil), args...),
+		Sanitizers: append([]string(nil), target.Sanitizers...),
 	}, nil
 }
 

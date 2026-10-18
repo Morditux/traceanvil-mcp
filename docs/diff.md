@@ -35,7 +35,7 @@ returned.
 
 Hard incompatibilities include:
 
-- different tool names;
+- different tool names or analysis tools (`memcheck`, `helgrind`, `drd`, `asan`, …);
 - different target ids (when both are present);
 - different OS or architecture (when both are present);
 - different or unknown fingerprint algorithms;

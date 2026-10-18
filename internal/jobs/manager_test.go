@@ -584,3 +584,25 @@ func TestManagerRejectsNegativeTimeout(t *testing.T) {
 		t.Fatal("Start() error = nil, want a negative-timeout rejection")
 	}
 }
+
+func TestManagerRetainsToolInSnapshotAndManifest(t *testing.T) {
+	manager, store := newTestManager(t, &fakeRunner{
+		runFunc: func(context.Context, runner.Request) (runner.Result, error) {
+			return runner.Result{Started: true, ExitCode: 0}, nil
+		},
+	}, Options{MaxJobs: 1})
+	spec := testSpec(t)
+	spec.Tool = "helgrind"
+	job, err := manager.Start(context.Background(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := waitJob(t, job)
+	if snapshot.Tool != "helgrind" {
+		t.Errorf("snapshot tool = %q", snapshot.Tool)
+	}
+	manifest := readManifest(t, store, job.ID())
+	if manifest.Tool != "helgrind" {
+		t.Errorf("manifest tool = %q", manifest.Tool)
+	}
+}

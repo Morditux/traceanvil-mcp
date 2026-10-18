@@ -158,3 +158,37 @@ func TestOptionsMapIsComplete(t *testing.T) {
 		t.Errorf("trace_children = %v", values["trace_children"])
 	}
 }
+
+func TestConcurrencyToolArguments(t *testing.T) {
+	for _, tool := range []Tool{ToolHelgrind, ToolDRD} {
+		t.Run(string(tool), func(t *testing.T) {
+			options := DefaultOptions()
+			options.Tool = tool
+			args, err := options.Arguments("/reports/x/"+string(tool)+".xml", "",
+				"/ws/fixture", []string{"--once"})
+			if err != nil {
+				t.Fatalf("Arguments() error = %v", err)
+			}
+			joined := strings.Join(args, "\n")
+			for _, expected := range []string{
+				"--tool=" + string(tool),
+				"--xml=yes",
+				"--error-exitcode=42",
+				"--num-callers=12",
+				"--",
+				"/ws/fixture",
+				"--once",
+			} {
+				if !strings.Contains(joined, expected) {
+					t.Errorf("arguments missing %q:\n%s", expected, joined)
+				}
+			}
+			if strings.Contains(joined, "--leak-check") || strings.Contains(joined, "--track-origins") {
+				t.Errorf("Memcheck-only options leaked into %s:\n%s", tool, joined)
+			}
+			if value, _ := options.Map()["tool"].(string); value != string(tool) {
+				t.Errorf("Map[tool] = %q", value)
+			}
+		})
+	}
+}

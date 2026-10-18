@@ -50,6 +50,7 @@ These checks constrain mistakes and traversal, but they are **not a sandbox**.
 | `program` | string | yes | Absolute path inside a workspace root. |
 | `cwd` | string | yes | Absolute directory inside a workspace root. |
 | `allowed_args` | array of strings | no | At most 64 arguments, each at most 4096 bytes, no NUL. |
+| `sanitizers` | array of strings | no | At most 4 unique values among `asan`, `ubsan`, `lsan`, `tsan`; declares how the binary was instrumented. |
 
 `program` and `cwd` need not exist at validation time. `doctor` reports missing
 or non-executable programs as warnings; a missing target does not prevent the
@@ -63,12 +64,20 @@ arguments. Arguments are always passed as a list, never through a shell.
 ### `backends`
 
 ```json
-{"valgrind": true, "gdb": true, "lldb": false}
+{"valgrind": true, "gdb": true, "lldb": false, "sanitizers": false}
 ```
 
 Enabling a backend allows probing and tool exposure. It never installs software.
-Valgrind is functionally probed for Memcheck XML support; `analysis_start` is
-published only while `backend.valgrind` is `available`. GDB is functionally
+Valgrind is functionally probed for Memcheck, Helgrind and DRD XML support;
+`analysis_start`, `helgrind_run` and `drd_run` are published only while their
+respective capabilities are `available`. A target may declare sanitizer builds
+with a `sanitizers` array (`asan`, `ubsan`, `lsan`, `tsan`). Enabling the
+sanitizer backend does not build or instrument binaries. Each of `asan_run`,
+`ubsan_run`, `lsan_run` and `tsan_run` is published only when the backend is
+enabled and at least one usable target declares that sanitizer. The declaration
+is an administrator trust statement; the capability requires the declared
+target's program and cwd to be currently usable. GDB is
+functionally
 probed by launching `gdb --quiet --nx --interpreter=dap` and completing the DAP
 `initialize` handshake without loading a target. LLDB is probed by discovering
 `lldb-dap` or a versioned `lldb-dap-<N>` in absolute PATH directories and
@@ -76,9 +85,10 @@ completing the same handshake with fixed init settings. `debug_start` is publish
 while at least one of `backend.gdb` or `backend.lldb` is `available` and at least
 one declared target currently resolves under policy. An omitted `backend`
 prefers GDB, then falls back to LLDB if GDB is disabled or unavailable.
-Execution actions require one available debugger backend. The analysis evidence tools (`analysis_status`,
-`analysis_cancel`, `analysis_report`, `analysis_artifact`) stay published so an
-existing run remains queryable; `debug_status` and `debug_stop` stay published
+Execution actions require one available debugger backend. The analysis evidence
+tools (`analysis_status`, `analysis_cancel`, `analysis_report`,
+`analysis_artifact`, `diagnostics_diff`) stay published so an existing run
+remains queryable; `debug_status` and `debug_stop` stay published
 for an existing session so it can always be released.
 
 ### `valgrind`
@@ -157,11 +167,16 @@ A capability change reconciles `tools/list` and emits
 | Backend | Executable | State now |
 |---|---|---|
 | Valgrind | `valgrind` | `available` when `--version` and `--tool=memcheck --help` verify Memcheck XML support |
+| Valgrind Helgrind | `valgrind` | `backend.valgrind.helgrind` available when `--tool=helgrind --help` verifies the tool |
+| Valgrind DRD | `valgrind` | `backend.valgrind.drd` available when `--tool=drd --help` verifies the tool |
+| Sanitizers | target declarations | `backend.sanitizer.<tool>` available when enabled and at least one usable target declares that tool; runtime instrumentation is trusted, not probed |
 | GDB | `gdb` | `available` when the DAP `initialize` handshake succeeds; no target is loaded |
 | LLDB | `lldb-dap`, `lldb-dap-<N>` | `available` when a versioned-discovery candidate completes the DAP `initialize` handshake; no target is loaded |
 
-The Valgrind probe runs only `--version` and `--tool=memcheck --help` with a
-short timeout and `LC_ALL=C`; it never runs a user program and never uses sudo.
+The Valgrind probes run only `--version` and fixed `--tool=<tool> --help`
+invocations with a short timeout and `LC_ALL=C`; they never run a user program
+and never use sudo. The sanitizer probe is configuration-only and records that
+the target declaration is trusted.
 The GDB probe runs `--version`, then starts GDB with `--quiet --nx
 --interpreter=dap` plus the same hardening `-ex` commands used by sessions and a
 private `HOME`, sends one DAP `initialize` request and closes the process. It

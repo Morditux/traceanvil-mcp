@@ -70,7 +70,7 @@ func TestClassifyAnalysis(t *testing.T) {
 			if test.name == "missing result" {
 				test.snapshot.Result = nil
 			}
-			result, complete, _ := classifyAnalysis(test.snapshot, test.xml, test.parseErr, test.adoptErr, test.rawTruncated, test.buildComplete)
+			result, complete, _ := classifyAnalysis(test.snapshot, test.xml, ToolMemcheck, test.parseErr, test.adoptErr, test.rawTruncated, test.buildComplete)
 			if result != test.want || complete != test.wantComplete {
 				t.Errorf("classifyAnalysis() = %q/%t, want %q/%t", result, complete, test.want, test.wantComplete)
 			}

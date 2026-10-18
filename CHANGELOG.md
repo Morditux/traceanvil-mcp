@@ -149,6 +149,19 @@ released yet; milestones map to the development plan.
   `testdata/golden/diff/`.
 - J8: ADR 0011 and `docs/diff.md`; README, SECURITY, MCP and compatibility
   documentation updated.
+- J9: Helgrind and DRD adapters on the Valgrind XML pipeline, with tool-specific
+  origins, severity policies, raw XML names and `helgrind_run`/`drd_run` tools.
+- J9: per-tool Valgrind capabilities (`backend.valgrind.helgrind`,
+  `backend.valgrind.drd`) verified with fixed `--tool=<tool> --help` probes.
+- J9: bounded ASan, UBSan, LSan and TSan log parsers with explicit incomplete
+  evidence on truncation, unknown output, signals or unexplained nonzero exits.
+- J9: `asan_run`, `ubsan_run`, `lsan_run` and `tsan_run`, target `sanitizers`
+  declarations and per-tool configuration-only `backend.sanitizer.<tool>`
+  capabilities; sanitizer evidence is stored as `sanitizer.log`/`raw_log`.
+- J9: multi-backend analysis service, `analysis_tool` report field and
+  `raw_log` artifacts; diff refuses different analysis tools.
+- J9: concurrency/sanitizer C fixtures, real Helgrind/DRD and real
+  ASan/UBSan/LSan/TSan integration tests, and ADR 0012/`docs/sanitizers.md`.
 
 ### Changed
 
@@ -193,6 +206,12 @@ released yet; milestones map to the development plan.
   metadata is now parsed for comparisons without changing `analysis_report`.
 - J8: `diagnostics_diff` is always published with the analysis service, even
   when `backend.valgrind` is unavailable. It never launches a program.
+- J9: `analysis_start` remains Memcheck-only; `helgrind_run`, `drd_run` and the
+  sanitizer tools select their tool explicitly. `analysis_status` and
+  `analysis_report` expose the selected analysis tool.
+- J9: sanitizer targets must declare their instrumentation; enabling the
+  sanitizer backend alone does not expose a `<tool>_run` tool without a matching
+  declaration.
 
 ### Security
 
@@ -257,6 +276,11 @@ released yet; milestones map to the development plan.
 - J8: diff items are compact (no full stacks), pages are item/byte bounded, and
   cursors are bound to both run ids. Duplicate fingerprints and truncation are
   explicit.
+- J9: sanitizer logs are untrusted, byte/line/issue/frame bounded evidence. A
+  clean concurrency run is never presented as proof of absence; unknown or
+  truncated sanitizer output is incomplete.
+- J9: sanitizer instrumentation is an explicit target declaration, not inferred
+  from a filename; no client environment or sanitizer flags are accepted.
 
 ## 0.0.0 — 2026-10-18
 

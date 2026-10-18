@@ -21,6 +21,7 @@ import (
 	"github.com/Morditux/traceanvil-mcp/internal/mcpserver"
 	"github.com/Morditux/traceanvil-mcp/internal/policy"
 	"github.com/Morditux/traceanvil-mcp/internal/runner"
+	"github.com/Morditux/traceanvil-mcp/internal/sanitizer"
 	"github.com/Morditux/traceanvil-mcp/internal/valgrind"
 	"github.com/Morditux/traceanvil-mcp/internal/version"
 )
@@ -99,6 +100,27 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	}
 	cleanups = append(cleanups, valgrindService.Close)
 
+	backends := map[string]analysis.Backend{
+		analysis.ToolMemcheck: analysis.NewValgrindBackend(valgrindService),
+		analysis.ToolHelgrind: analysis.NewValgrindBackend(valgrindService),
+		analysis.ToolDRD:      analysis.NewValgrindBackend(valgrindService),
+	}
+	if cfg.Backends.Sanitizers {
+		sanitizerService, err := sanitizer.NewService(sanitizer.ServiceOptions{
+			Store: store, Manager: manager, Resolver: resolver,
+			Roots: resolver.ResolvedRoots(),
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "mcp-native-diagnostics: %v\n", err)
+			return ExitFailure
+		}
+		cleanups = append(cleanups, sanitizerService.Close)
+		sanitizerBackend := analysis.NewSanitizerBackend(sanitizerService)
+		for _, tool := range []string{analysis.ToolASan, analysis.ToolUBSan, analysis.ToolLSan, analysis.ToolTSan} {
+			backends[tool] = sanitizerBackend
+		}
+	}
+
 	maxReportBytes := store.MaxBytesPerRun()
 	if maxReportBytes > analysis.DefaultMaxReportBytes {
 		maxReportBytes = analysis.DefaultMaxReportBytes
@@ -114,12 +136,34 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 
 	analysisService, err := analysis.New(analysis.Options{
 		Store:          store,
-		Backend:        analysis.NewValgrindBackend(valgrindService),
-		BackendEnabled: cfg.Backends.Valgrind,
+		Backends:       backends,
+		BackendEnabled: cfg.Backends.Valgrind || cfg.Backends.Sanitizers,
 		BackendAvailable: func() (bool, string) {
 			record, ok := registry.Get(capabilities.BackendValgrind)
 			if !ok {
 				return false, "valgrind capability is not registered"
+			}
+			return record.State == capabilities.StateAvailable, record.Reason
+		},
+		BackendAvailableFor: func(tool string) (bool, string) {
+			id := capabilities.BackendValgrind
+			switch tool {
+			case analysis.ToolHelgrind:
+				id = capabilities.BackendValgrindHelgrind
+			case analysis.ToolDRD:
+				id = capabilities.BackendValgrindDRD
+			case analysis.ToolASan:
+				id = capabilities.BackendSanitizerASan
+			case analysis.ToolUBSan:
+				id = capabilities.BackendSanitizerUBSan
+			case analysis.ToolLSan:
+				id = capabilities.BackendSanitizerLSan
+			case analysis.ToolTSan:
+				id = capabilities.BackendSanitizerTSan
+			}
+			record, ok := registry.Get(id)
+			if !ok {
+				return false, id + " capability is not registered"
 			}
 			return record.State == capabilities.StateAvailable, record.Reason
 		},

@@ -33,8 +33,17 @@ func TestStartValidation(t *testing.T) {
 
 	t.Run("unknown tool", func(t *testing.T) {
 		service := newTestService(t, store, newFakeBackend(), nil)
-		_, err := service.Start(context.Background(), StartRequest{TargetID: "fixture", Tool: "helgrind"})
+		_, err := service.Start(context.Background(), StartRequest{TargetID: "fixture", Tool: "callgrind"})
 		mustCode(t, err, CodeUnknownTool)
+	})
+
+	t.Run("helgrind options rejected", func(t *testing.T) {
+		service := newTestService(t, store, newFakeBackend(), nil)
+		_, err := service.Start(context.Background(), StartRequest{
+			TargetID: "fixture", Tool: ToolHelgrind,
+			Options: &MemcheckOptions{LeakCheck: strPtr("full")},
+		})
+		mustCode(t, err, CodeInvalidArgument)
 	})
 
 	t.Run("empty target", func(t *testing.T) {
@@ -216,3 +225,27 @@ func TestStartErrorMapping(t *testing.T) {
 func strPtr(value string) *string { return &value }
 func boolPtr(value bool) *bool    { return &value }
 func intPtr(value int) *int       { return &value }
+
+func TestStartHelgrindSelectsTool(t *testing.T) {
+	store := newTestStore(t)
+	backend := newFakeBackend()
+	service := newTestService(t, store, backend, nil)
+	status, err := service.Start(context.Background(), StartRequest{
+		TargetID: "fixture",
+		Tool:     ToolHelgrind,
+		Args:     []string{"--once"},
+	})
+	if err != nil {
+		t.Fatalf("Start(helgrind) error = %v", err)
+	}
+	if status.Tool != ToolHelgrind {
+		t.Errorf("status tool = %q, want helgrind", status.Tool)
+	}
+	request := backend.lastRequest()
+	if request.Tool != valgrind.ToolHelgrind {
+		t.Errorf("backend tool = %q", request.Tool)
+	}
+	if request.Options != nil {
+		t.Errorf("backend options = %+v, want nil for helgrind", request.Options)
+	}
+}

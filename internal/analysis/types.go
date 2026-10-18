@@ -13,8 +13,26 @@ import (
 // incompatible response or request shape.
 const APISchemaVersion = 1
 
-// ToolMemcheck is the only analysis tool implemented at J4.
-const ToolMemcheck = valgrind.ProtocolTool
+// Analysis tool identifiers. Memcheck was J4; Helgrind and DRD are J9.
+const (
+	ToolMemcheck = valgrind.ProtocolTool
+	ToolHelgrind = "helgrind"
+	ToolDRD      = "drd"
+	ToolASan     = "asan"
+	ToolUBSan    = "ubsan"
+	ToolLSan     = "lsan"
+	ToolTSan     = "tsan"
+)
+
+// ValidTool reports whether tool is implemented by this build.
+func ValidTool(tool string) bool {
+	switch tool {
+	case ToolMemcheck, ToolHelgrind, ToolDRD, ToolASan, ToolUBSan, ToolLSan, ToolTSan:
+		return true
+	default:
+		return false
+	}
+}
 
 // State is the job lifecycle as exposed by the analysis API. It mirrors
 // jobs.State and adds "unknown" for a persisted run that the current server
@@ -62,10 +80,18 @@ type MemcheckOptions struct {
 // subset of the configured target's allowed_args.
 type StartRequest struct {
 	TargetID  string           `json:"target_id" jsonschema:"declared target id; never a filesystem path"`
-	Tool      string           `json:"tool,omitempty" jsonschema:"analysis tool; only memcheck is supported"`
+	Tool      string           `json:"tool,omitempty" jsonschema:"analysis_start accepts only memcheck (or omits this field)"`
 	Args      []string         `json:"args,omitempty" jsonschema:"program arguments; each must be declared in the target's allowed_args"`
 	TimeoutMS int              `json:"timeout_ms,omitempty" jsonschema:"optional timeout in milliseconds; may only shorten limits.timeout_seconds"`
 	Options   *MemcheckOptions `json:"options,omitempty" jsonschema:"strict Memcheck options; unknown fields are rejected"`
+}
+
+// ToolStartRequest is the input of the tool-specific run helpers
+// (helgrind_run/drd_run). It intentionally has no free-form tool/options field.
+type ToolStartRequest struct {
+	TargetID  string   `json:"target_id" jsonschema:"declared target id; never a filesystem path"`
+	Args      []string `json:"args,omitempty" jsonschema:"program arguments; each must be declared in the target's allowed_args"`
+	TimeoutMS int      `json:"timeout_ms,omitempty" jsonschema:"optional timeout in milliseconds; may only shorten limits.timeout_seconds"`
 }
 
 // Progress reports bounded lifecycle information. The server never invents a
@@ -86,6 +112,7 @@ type Metrics struct {
 	StderrTruncated  bool  `json:"stderr_truncated"`
 	OutputIncomplete bool  `json:"output_incomplete"`
 	RawXMLBytes      int64 `json:"raw_xml_bytes,omitempty"`
+	RawLogBytes      int64 `json:"raw_log_bytes,omitempty"`
 	ReportBytes      int64 `json:"report_bytes,omitempty"`
 }
 
@@ -170,6 +197,7 @@ type PageInfo struct {
 type ReportPage struct {
 	SchemaVersion    int                     `json:"schema_version"`
 	RunID            string                  `json:"run_id"`
+	AnalysisTool     string                  `json:"analysis_tool"`
 	Tool             diagnostic.Tool         `json:"tool"`
 	Result           diagnostic.Result       `json:"result"`
 	AnalysisComplete bool                    `json:"analysis_complete"`
@@ -187,6 +215,9 @@ type ArtifactType string
 const (
 	// ArtifactRawXML is the preserved raw Valgrind XML.
 	ArtifactRawXML ArtifactType = "raw_xml"
+	// ArtifactRawLog is a bounded sanitizer-owned runtime log
+	// (sanitizer.log).
+	ArtifactRawLog ArtifactType = "raw_log"
 	// ArtifactAnalysisReport is the canonical analysis.json document.
 	ArtifactAnalysisReport ArtifactType = "analysis_report"
 	// ArtifactStdout is the bounded target/Valgrind stdout log.
@@ -201,7 +232,7 @@ const (
 // bounded excerpt: no absolute filesystem path is exposed.
 type ArtifactRequest struct {
 	RunID        string       `json:"run_id" jsonschema:"opaque run id returned by analysis_start"`
-	ArtifactType ArtifactType `json:"artifact_type" jsonschema:"one of raw_xml, analysis_report, stdout, stderr, job_manifest"`
+	ArtifactType ArtifactType `json:"artifact_type" jsonschema:"one of raw_xml, raw_log, analysis_report, stdout, stderr, job_manifest"`
 	Offset       int64        `json:"offset,omitempty" jsonschema:"byte offset in the artifact; defaults to 0"`
 	MaxBytes     int          `json:"max_bytes,omitempty" jsonschema:"maximum bytes to return; clamped to the server excerpt cap"`
 }
@@ -225,12 +256,28 @@ type ArtifactOutput struct {
 // artifactFileName maps a logical artifact type to the file owned by the
 // Memcheck pipeline. Only these names can ever be read through the API.
 func artifactFileName(tool string, artifactType ArtifactType) (string, error) {
-	if tool != "" && tool != ToolMemcheck {
-		return "", Errorf(CodeUnknownTool, "supported tools: %s", ToolMemcheck)
+	switch tool {
+	case "", ToolMemcheck:
+		tool = ToolMemcheck
+	case ToolHelgrind, ToolDRD, ToolASan, ToolUBSan, ToolLSan, ToolTSan:
+	default:
+		return "", Errorf(CodeUnknownTool, "unsupported analysis tool")
 	}
 	switch artifactType {
 	case ArtifactRawXML:
-		return valgrind.RawArtifactName, nil
+		switch tool {
+		case ToolHelgrind:
+			return valgrind.ToolHelgrind.RawArtifactName(), nil
+		case ToolDRD:
+			return valgrind.ToolDRD.RawArtifactName(), nil
+		case ToolASan, ToolUBSan, ToolLSan, ToolTSan:
+			return "", Errorf(CodeInvalidArgument,
+				"raw_xml is not available for sanitizer runs; use raw_log")
+		default:
+			return valgrind.RawArtifactName, nil
+		}
+	case ArtifactRawLog:
+		return "stderr.log", nil
 	case ArtifactAnalysisReport:
 		return valgrind.AnalysisArtifactName, nil
 	case ArtifactStdout:
@@ -241,7 +288,7 @@ func artifactFileName(tool string, artifactType ArtifactType) (string, error) {
 		return jobs.ManifestName, nil
 	default:
 		return "", Errorf(CodeInvalidArgument,
-			"artifact_type must be one of raw_xml, analysis_report, stdout, stderr, job_manifest; got %q",
+			"artifact_type must be one of raw_xml, raw_log, analysis_report, stdout, stderr, job_manifest; got %q",
 			artifactType)
 	}
 }

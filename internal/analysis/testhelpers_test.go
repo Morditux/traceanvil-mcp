@@ -83,6 +83,7 @@ func (b *fakeBackend) Start(ctx context.Context, req valgrind.Request) (Run, err
 		id: id,
 		snapshot: valgrind.AnalysisSnapshot{
 			RunID: id,
+			Tool:  req.Tool,
 			Phase: valgrind.PhaseRunning,
 		},
 		job: jobs.Snapshot{

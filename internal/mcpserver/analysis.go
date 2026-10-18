@@ -18,6 +18,12 @@ func AnalysisToolNames() []string {
 		"analysis_report",
 		"analysis_artifact",
 		"diagnostics_diff",
+		"helgrind_run",
+		"drd_run",
+		"asan_run",
+		"ubsan_run",
+		"lsan_run",
+		"tsan_run",
 	}
 }
 
@@ -44,11 +50,64 @@ func AnalysisDefinitions(service *analysis.Service) []ToolDefinition {
 						"from configuration; this tool never accepts a path or a shell command.",
 					Annotations: mutationAnnotations("Start analysis", true),
 				}, func(ctx context.Context, _ *mcp.CallToolRequest, input analysis.StartRequest) (*mcp.CallToolResult, analysis.Status, error) {
+					if input.Tool != "" && input.Tool != analysis.ToolMemcheck {
+						return nil, analysis.Status{}, analysis.Errorf(analysis.CodeInvalidArgument,
+							"analysis_start only supports memcheck; use helgrind_run, drd_run, asan_run, ubsan_run, lsan_run or tsan_run")
+					}
+					input.Tool = analysis.ToolMemcheck
 					status, err := service.Start(ctx, input)
 					return nil, status, err
 				})
 			},
 		},
+		{
+			Name:               "helgrind_run",
+			RequiredCapability: capabilities.BackendValgrindHelgrind,
+			Add: func(server *mcp.Server) {
+				mcp.AddTool(server, &mcp.Tool{
+					Name: "helgrind_run",
+					Description: "Start one bounded Helgrind race analysis of a declared target. " +
+						"The target id is resolved from configuration; this tool accepts no path or shell " +
+						"command. Concurrency reports are non-deterministic and a clean run is not proof " +
+						"that no race exists.",
+					Annotations: mutationAnnotations("Start Helgrind analysis", true),
+				}, func(ctx context.Context, _ *mcp.CallToolRequest, input analysis.ToolStartRequest) (*mcp.CallToolResult, analysis.Status, error) {
+					status, err := service.Start(ctx, analysis.StartRequest{
+						TargetID: input.TargetID, Tool: analysis.ToolHelgrind,
+						Args: input.Args, TimeoutMS: input.TimeoutMS,
+					})
+					return nil, status, err
+				})
+			},
+		},
+		{
+			Name:               "drd_run",
+			RequiredCapability: capabilities.BackendValgrindDRD,
+			Add: func(server *mcp.Server) {
+				mcp.AddTool(server, &mcp.Tool{
+					Name: "drd_run",
+					Description: "Start one bounded DRD race analysis of a declared target. " +
+						"The target id is resolved from configuration; this tool accepts no path or shell " +
+						"command. Concurrency reports are non-deterministic and a clean run is not proof " +
+						"that no race exists.",
+					Annotations: mutationAnnotations("Start DRD analysis", true),
+				}, func(ctx context.Context, _ *mcp.CallToolRequest, input analysis.ToolStartRequest) (*mcp.CallToolResult, analysis.Status, error) {
+					status, err := service.Start(ctx, analysis.StartRequest{
+						TargetID: input.TargetID, Tool: analysis.ToolDRD,
+						Args: input.Args, TimeoutMS: input.TimeoutMS,
+					})
+					return nil, status, err
+				})
+			},
+		},
+		sanitizerToolDefinition(service, "asan_run", analysis.ToolASan,
+			capabilities.BackendSanitizerASan, "AddressSanitizer"),
+		sanitizerToolDefinition(service, "ubsan_run", analysis.ToolUBSan,
+			capabilities.BackendSanitizerUBSan, "UndefinedBehaviorSanitizer"),
+		sanitizerToolDefinition(service, "lsan_run", analysis.ToolLSan,
+			capabilities.BackendSanitizerLSan, "LeakSanitizer"),
+		sanitizerToolDefinition(service, "tsan_run", analysis.ToolTSan,
+			capabilities.BackendSanitizerTSan, "ThreadSanitizer"),
 		{
 			Name: "analysis_status",
 			Add: func(server *mcp.Server) {
@@ -116,7 +175,7 @@ func AnalysisDefinitions(service *analysis.Service) []ToolDefinition {
 				mcp.AddTool(server, &mcp.Tool{
 					Name: "analysis_artifact",
 					Description: "Return a bounded excerpt of one allowlisted artifact of a run " +
-						"(raw_xml, analysis_report, stdout, stderr, job_manifest). No filesystem path is " +
+						"(raw_xml, raw_log, analysis_report, stdout, stderr, job_manifest). No filesystem path is " +
 						"exposed and no arbitrary file can be read. Continue with next_offset.",
 					Annotations: readOnlyAnnotations("Analysis artifact"),
 				}, func(ctx context.Context, _ *mcp.CallToolRequest, input analysis.ArtifactRequest) (*mcp.CallToolResult, analysis.ArtifactOutput, error) {
@@ -146,5 +205,27 @@ func mutationAnnotations(title string, destructive bool) *mcp.ToolAnnotations {
 		DestructiveHint: &destructive,
 		IdempotentHint:  false,
 		OpenWorldHint:   &closedWorld,
+	}
+}
+
+func sanitizerToolDefinition(service *analysis.Service, name, tool, capability, runtime string) ToolDefinition {
+	return ToolDefinition{
+		Name:               name,
+		RequiredCapability: capability,
+		Add: func(server *mcp.Server) {
+			mcp.AddTool(server, &mcp.Tool{
+				Name: name,
+				Description: "Start one bounded " + runtime + " run of a target that the configuration " +
+					"declares as built with " + tool + ". The server does not build or instrument " +
+					"targets. A clean concurrency run is not proof that no race exists.",
+				Annotations: mutationAnnotations("Start "+runtime+" analysis", true),
+			}, func(ctx context.Context, _ *mcp.CallToolRequest, input analysis.ToolStartRequest) (*mcp.CallToolResult, analysis.Status, error) {
+				status, err := service.Start(ctx, analysis.StartRequest{
+					TargetID: input.TargetID, Tool: tool,
+					Args: input.Args, TimeoutMS: input.TimeoutMS,
+				})
+				return nil, status, err
+			})
+		},
 	}
 }

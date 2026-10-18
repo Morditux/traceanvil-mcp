@@ -152,10 +152,12 @@ func TestAnalysisToolPublicationFollowsBackendCapability(t *testing.T) {
 	names := listToolNames(t, session, ctx)
 	for _, want := range AnalysisToolNames() {
 		exposed := contains(names, want)
-		if want == "analysis_start" && exposed {
-			t.Errorf("analysis_start is exposed while backend.valgrind is unavailable")
+		gated := want == "analysis_start" || want == "helgrind_run" || want == "drd_run" ||
+			want == "asan_run" || want == "ubsan_run" || want == "lsan_run" || want == "tsan_run"
+		if gated && exposed {
+			t.Errorf("%s is exposed while its backend capability is unavailable", want)
 		}
-		if want != "analysis_start" && !exposed {
+		if !gated && !exposed {
 			t.Errorf("tools = %v, missing evidence tool %q", names, want)
 		}
 	}
@@ -197,7 +199,9 @@ func TestAnalysisToolPublicationFollowsBackendCapability(t *testing.T) {
 		t.Errorf("tools = %v, analysis_start must disappear", names)
 	}
 	for _, want := range AnalysisToolNames() {
-		if want != "analysis_start" && !contains(names, want) {
+		gated := want == "analysis_start" || want == "helgrind_run" || want == "drd_run" ||
+			want == "asan_run" || want == "ubsan_run" || want == "lsan_run" || want == "tsan_run"
+		if !gated && !contains(names, want) {
 			t.Errorf("tools = %v, evidence tool %q must stay published", names, want)
 		}
 	}
@@ -322,6 +326,16 @@ func TestAnalysisToolsCallAndNamedErrors(t *testing.T) {
 	decodeCall(t, startResult, &started)
 	if started.RunID != "run_000000000000000000000000000000aa" {
 		t.Errorf("run_id = %q", started.RunID)
+	}
+
+	rejected, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "analysis_start", Arguments: map[string]any{"target_id": "fixture", "tool": "helgrind"},
+	})
+	if err != nil {
+		t.Fatalf("CallTool(analysis_start helgrind) error = %v", err)
+	}
+	if !rejected.IsError || !strings.Contains(toolText(rejected), "only supports memcheck") {
+		t.Errorf("analysis_start accepted a non-memcheck tool: %+v", rejected)
 	}
 
 	statusResult, err := session.CallTool(ctx, &mcp.CallToolParams{
@@ -634,5 +648,100 @@ func TestDiagnosticsDiffTool(t *testing.T) {
 	}
 	if len(diff.Items) != 1 || diff.Items[0].Change != diagnostic.ChangePersistent {
 		t.Fatalf("items = %+v", diff.Items)
+	}
+}
+
+func TestHelgrindAndDRDToolsPublication(t *testing.T) {
+	registry := capabilities.NewRegistry(nil, time.Second)
+	for _, id := range []string{capabilities.BackendValgrindHelgrind, capabilities.BackendValgrindDRD} {
+		if err := registry.Set(capabilities.Capability{
+			ID: id, Kind: "backend", Backend: "valgrind",
+			State: capabilities.StateAvailable, Path: "/usr/bin/valgrind",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server, _, _ := newAnalysisServer(t, registry)
+	server.SyncTools()
+	session, ctx := connect(t, server, nil)
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := make(map[string]*mcp.Tool)
+	for _, tool := range tools.Tools {
+		found[tool.Name] = tool
+	}
+	for _, name := range []string{"helgrind_run", "drd_run"} {
+		tool, ok := found[name]
+		if !ok {
+			t.Fatalf("missing %s in tools/list", name)
+		}
+		if tool.Annotations == nil || tool.Annotations.ReadOnlyHint {
+			t.Errorf("%s must not be marked read-only", name)
+		}
+		schema, ok := tool.InputSchema.(map[string]any)
+		if !ok {
+			t.Fatalf("%s input schema = %T", name, tool.InputSchema)
+		}
+		properties, ok := schema["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s properties = %T", name, schema["properties"])
+		}
+		for _, field := range []string{"target_id", "args", "timeout_ms"} {
+			if _, ok := properties[field]; !ok {
+				t.Errorf("%s schema missing %q", name, field)
+			}
+		}
+	}
+}
+
+func TestSanitizerToolsPublication(t *testing.T) {
+	registry := capabilities.NewRegistry(nil, time.Second)
+	for _, id := range []string{
+		capabilities.BackendSanitizerASan,
+		capabilities.BackendSanitizerUBSan,
+		capabilities.BackendSanitizerLSan,
+		capabilities.BackendSanitizerTSan,
+	} {
+		if err := registry.Set(capabilities.Capability{
+			ID: id, Kind: "backend", Backend: "sanitizer",
+			State: capabilities.StateAvailable,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server, _, _ := newAnalysisServer(t, registry)
+	server.SyncTools()
+	session, ctx := connect(t, server, nil)
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := make(map[string]*mcp.Tool)
+	for _, tool := range tools.Tools {
+		found[tool.Name] = tool
+	}
+	for _, name := range []string{"asan_run", "ubsan_run", "lsan_run", "tsan_run"} {
+		tool, ok := found[name]
+		if !ok {
+			t.Fatalf("missing %s in tools/list", name)
+		}
+		if tool.Annotations == nil || tool.Annotations.ReadOnlyHint {
+			t.Errorf("%s must not be marked read-only", name)
+		}
+		schema, ok := tool.InputSchema.(map[string]any)
+		if !ok {
+			t.Fatalf("%s input schema = %T", name, tool.InputSchema)
+		}
+		properties, ok := schema["properties"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s properties = %T", name, schema["properties"])
+		}
+		for _, field := range []string{"target_id", "args", "timeout_ms"} {
+			if _, ok := properties[field]; !ok {
+				t.Errorf("%s schema missing %q", name, field)
+			}
+		}
 	}
 }
