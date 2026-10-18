@@ -19,7 +19,7 @@ later milestones. The server advertises `tools.listChanged = true` and emits
 `notifications/tools/list_changed` when the list changes. Clients that do not
 refresh dynamically must reconnect.
 
-At J1 only one tool is implemented: `system_capabilities`. It is always
+At J2 only one tool is implemented: `system_capabilities`. It is always
 available and read-only.
 
 ## `system_capabilities`
@@ -99,7 +99,7 @@ will change only for an incompatible payload change.
 | `unsupported` | Backend present but the feature is not supported. |
 | `unknown` | Could not be verified, including binary-only discovery. |
 
-At J1, external backends are discovery-only and therefore `unknown` when their
+At J2, external backends are discovery-only and therefore `unknown` when their
 executable exists. This is deliberate: a binary on `PATH` does not prove that
 Memcheck or a DAP session works.
 
@@ -120,4 +120,4 @@ revalidate and return `backend_unavailable` rather than a false "no errors"
 result.
 
 The server never reports "no errors" when a backend is missing or a probe is
-incomplete. At J1 no analysis is performed at all.
+incomplete. At J2 no analysis is performed and no MCP tool launches a target.

@@ -33,8 +33,13 @@ a fix before public disclosure.
   `--version` only, with a 2-second timeout, bounded output and a minimal
   environment. Relative `PATH` entries are rejected. `lldb-dap` is resolved but
   not executed. No user program is run.
-- No analysis tool is exposed yet, so no target can be launched in this
-  milestone.
+- No MCP tool launches a target yet. J2 provides an internal runner
+  (`policy` → `runner` → `artifacts` → `jobs`) that is exercised by tests but is
+  not reachable through MCP until `analysis_start` is wired in J4.
+- The internal runner revalidates targets with `EvalSymlinks`, confines program
+  and working directory to resolved workspace roots, uses process groups with
+  TERM/KILL cleanup, does not inherit the server environment or stdin, and
+  bounds stdout/stderr by a shared byte budget.
 
 ## Threat model
 
@@ -56,6 +61,10 @@ Explicit assumptions and limits:
    redacted.
 5. **No network service exists.** The MVP serves MCP over stdio only; there is no
    HTTP transport, telemetry or upload.
+6. **Policy checks are not atomic with execution.** A target program or working
+   directory that the server's user can replace inside a writable workspace root
+   may be swapped between path validation and launch. Keep workspace roots
+   writable only by trusted users, or isolate execution at the system level.
 
 ## Design commitments
 
@@ -64,7 +73,14 @@ These are non-negotiable for every milestone:
 - Programs are started with `os/exec` and argument arrays. There is no free-form
   shell (`sh -c`, `bash -c`) and no client-supplied command string.
 - Requests reference targets declared in configuration by identifier; clients do
-  not submit arbitrary executable paths.
+  not submit arbitrary executable paths. Targets are revalidated at execution
+  time, including symlink resolution and resolved-root containment.
+- The target environment is constructed from an allowlist; the server environment
+  and stdin are never inherited.
+- Child processes run in their own process group. Timeouts and cancellation send
+  TERM, then KILL after a grace period; remaining group members are killed after
+  the direct child is reaped. Detached children that call `setsid` can still
+  escape this cleanup, and a hard server crash may leave children behind.
 - No arbitrary PID attach, no raw memory read, no generic GDB `evaluate`, and no
   debugger command passthrough in the default profile.
 - A tool appears in `tools/list` only when it is implemented, enabled by
@@ -73,7 +89,11 @@ These are non-negotiable for every milestone:
 - Long operations honour `context.Context`, deadlines, cancellation and process
   cleanup. Outputs and artifacts are bounded and explicitly marked when truncated.
 - Jobs get private artifact directories (`0700`) with cryptographically random
-  names; access is scoped to the owning session.
+  names, opened with `O_NOFOLLOW`; writes are atomic and bounded by per-run byte
+  and file-count quotas. Access is scoped to the owning session in later
+  milestones.
+- A program exit code is tracked separately from the job state. A timeout, kill
+  or infrastructure failure never becomes a successful "no errors" result.
 - Analysis completeness is explicit. A timeout, kill, parse failure or quota
   breach sets `analysis_complete=false`; `total=0` with an incomplete analysis
   never means "no bug".
@@ -95,6 +115,10 @@ These are non-negotiable for every milestone:
 - Prefer the `safe-default` profile; opt in to elevated features explicitly.
 - Treat `perf`/ptrace restrictions as expected conditions, not bugs to bypass.
 - Review the raw artifacts retention policy before collecting large reports.
+  J2 enforces per-run quotas only; global retention and disk quotas arrive
+  later.
+- Use a container or cgroup when the target may escape its process group
+  (`setsid`) or must be isolated beyond a bounded subprocess.
 - Do not expose the stdio transport through a network wrapper without adding
   authentication and authorization yourself.
 

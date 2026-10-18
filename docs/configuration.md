@@ -54,6 +54,11 @@ These checks constrain mistakes and traversal, but they are **not a sandbox**.
 or non-executable programs as warnings; a missing target does not prevent the
 server from starting.
 
+At execution time, requested arguments must be a multiset subset of
+`allowed_args`: an unknown value is denied, and a value cannot be repeated more
+often than it appears in the configuration. An empty `allowed_args` permits no
+arguments. Arguments are always passed as a list, never through a shell.
+
 ### `backends`
 
 ```json

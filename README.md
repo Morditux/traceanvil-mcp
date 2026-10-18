@@ -14,7 +14,7 @@ The value of the project is not arbitrary command execution. It is:
 
 ## Project status
 
-**Early development — J1 (MCP bootstrap) complete.**
+**Early development — J2 (execution foundations) complete.**
 
 The repository now provides:
 
@@ -22,11 +22,15 @@ The repository now provides:
 - strict JSON configuration with `validate-config`;
 - `doctor`, a read-only inspection of configuration, paths and capabilities;
 - a capability registry and conditional tool publication with `tools/list_changed`;
-- one MCP tool, `system_capabilities`.
+- one MCP tool, `system_capabilities`;
+- an internal bounded runner: allowlisted targets, symlink revalidation,
+  process-group cleanup, timeouts/cancellation, bounded output, atomic private
+  artifacts and job lifecycle (`internal/policy`, `runner`, `artifacts`, `jobs`).
 
-**No analysis backend is implemented yet.** Memcheck arrives with J3, GDB with J6,
-LLDB with J7, sanitizers and CTest with J9/J10, profilers with J12/J13. Do not
-deploy this project yet.
+**No MCP tool launches a program yet.** J2's execution foundation is exercised by
+internal and integration tests; `analysis_start` is wired in J4. Memcheck arrives
+with J3, GDB with J6, LLDB with J7, sanitizers and CTest with J9/J10, profilers
+with J12/J13. Do not deploy this project yet.
 
 Roadmap, safety rules and acceptance criteria are defined in the project
 specification and tracked as milestones J0 to J14.
@@ -104,7 +108,7 @@ These codes apply to the compiled binary. `go run` reports any non-zero exit as
 
 ### Current MCP surface
 
-`system_capabilities` is the only tool at J1. It is read-only, never launches a
+`system_capabilities` is still the only MCP tool at J2. It is read-only, never launches a
 program, and returns build information, the effective policy and limits, backend
 capability records, exposed tools and limitation warnings.
 
@@ -120,11 +124,17 @@ cmd/mcp-native-diagnostics/   Command entry point
 internal/cli/                 Commands, orchestration and exit codes
 internal/config/              Strict JSON configuration and validation
 internal/capabilities/        Capability records, probes and registry
+internal/policy/              Runtime target resolution and argument allowlist
+internal/runner/              Bounded process execution and cleanup
+internal/artifacts/           Private run directories and atomic writes
+internal/jobs/                Job lifecycle, quotas and result manifests
 internal/mcpserver/           MCP server, tool publication, system_capabilities
 internal/version/             Build information
 tests/e2e/                    Real stdio MCP client/server tests
+tests/integration/            Policy → runner → artifacts → jobs pipeline
 docs/adr/                     Architecture decision records
 docs/configuration.md         Configuration reference
+docs/artifacts.md             Run directory layout and result manifest
 docs/mcp.md                   MCP transport, tool discovery and payloads
 docs/compatibility.md         Recorded toolchain inventory
 config.example.json           Example configuration
@@ -133,18 +143,24 @@ scripts/preflight.sh          Read-only machine inventory
 .github/workflows/ci.yml      Continuous integration
 ```
 
-Analysis packages (`policy`, `runner`, `jobs`, `artifacts`, `diagnostic`,
-`valgrind`, `dap`, `debugger`, ...) are introduced by their milestones.
+Analysis packages (`diagnostic`, `valgrind`, `dap`, `debugger`, `sanitizer`,
+`profile`, `ctest`, ...) are introduced by their milestones.
 
 ## Development
 
 ```sh
-./scripts/check.sh      # gofmt, go vet, go test, go test -race, go build
+./scripts/check.sh      # gofmt, vet, go test, go test -race, go build
 ./scripts/preflight.sh  # read-only inventory; changes nothing
 ```
 
-`go test ./...` includes an end-to-end test that builds the binary, starts
-`serve` over real pipes and verifies that stdout contains only JSON-RPC messages.
+`go test ./...` includes:
+
+- an end-to-end test that builds the binary, starts `serve` over real pipes and
+  verifies that stdout contains only JSON-RPC messages;
+- runner tests for timeouts, cancellation, TERM-ignoring processes, pipe-holding
+  grandchildren and a 100-run process-leak check;
+- an integration test that resolves a target, runs it through the job manager
+  and reads `result.json` and the output logs.
 
 `preflight.sh` never installs packages, never edits kernel settings and never
 executes a user program. Installing tools is an explicit, human-approved step.
@@ -153,9 +169,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for code, test and review expectations.
 
 ## Security
 
-This server launches native programs once analysis tools land. Directory
-allowlists are **not** a sandbox, and an allowlisted binary may still be
-malicious. Read [SECURITY.md](SECURITY.md) before using the project with
+This server launches native programs. Directory allowlists are **not** a
+sandbox, and an allowlisted binary may still be malicious. The J2 runner uses
+process groups, a minimal environment and bounded output, but it is not a
+container. Read [SECURITY.md](SECURITY.md) before using the project with
 untrusted code.
 
 ## License
