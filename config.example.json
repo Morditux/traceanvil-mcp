@@ -18,7 +18,8 @@
     "valgrind": true,
     "gdb": true,
     "lldb": false,
-    "sanitizers": false
+    "sanitizers": false,
+    "ctest": false
   },
   "policy": {
     "profile": "safe-default",
@@ -36,5 +37,9 @@
     "suppressions": {
       "project-known": "/home/user/work/native-project/suppressions/known.supp"
     }
+  },
+  "ctest": {
+    "projects": [],
+    "test_timeout_seconds": 30
   }
 }

@@ -14,7 +14,7 @@ The value of the project is not arbitrary command execution. It is:
 
 ## Project status
 
-**Early development — J9 (Helgrind, DRD and sanitizers) complete.**
+**Early development — J10 (Helgrind, DRD, sanitizers and CTest) complete.**
 
 The repository now provides:
 
@@ -32,9 +32,10 @@ The repository now provides:
   with `tools/list_changed`;
 - the J4/J9 analysis tools (`analysis_start`, `helgrind_run`, `drd_run`,
   `asan_run`, `ubsan_run`, `lsan_run`, `tsan_run`, `analysis_status`,
-  `analysis_cancel`, `analysis_report`,
-  `analysis_artifact`), the J8 `diagnostics_diff` tool and the J6/J7 GDB/LLDB
-  debug tools
+  `analysis_cancel`, `analysis_report`, `analysis_artifact`), the J8
+  `diagnostics_diff` tool, the J10 CTest tools (`ctest_discover`, `ctest_run`,
+  `ctest_status`, `ctest_cancel`, `ctest_report`, `ctest_artifact`) and the
+  J6/J7 GDB/LLDB debug tools
   (`debug_start`, `debug_status`, `debug_set_breakpoints`, `debug_continue`,
   `debug_pause`, `debug_step`, `debug_threads`, `debug_stack_trace`,
   `debug_scopes`, `debug_variables`, `debug_stop`). `debug_start` is published
@@ -203,7 +204,8 @@ Capabilities are revalidated every 30 seconds and
 payloads carry `schema_version = 1`. See [docs/mcp.md](docs/mcp.md) for schemas,
 error codes and pagination, [docs/valgrind.md](docs/valgrind.md) for the evidence
 format, [docs/diff.md](docs/diff.md) for run comparison,
-[docs/sanitizers.md](docs/sanitizers.md) for sanitizer runs, and
+[docs/sanitizers.md](docs/sanitizers.md) for sanitizer runs,
+[docs/ctest.md](docs/ctest.md) for CTest integration, and
 [docs/debugger.md](docs/debugger.md) for the GDB/LLDB backends.
 
 ## Repository layout
@@ -220,6 +222,7 @@ internal/jobs/                Job lifecycle, quotas and result manifests
 internal/diagnostic/          Canonical report, fingerprints and run comparison
 internal/valgrind/            Memcheck/Helgrind/DRD options, XML parser and service
 internal/sanitizer/           ASan/UBSan/LSan/TSan parser, reports and service
+internal/ctest/               Trusted CTest discovery, execution and JUnit reports
 internal/analysis/            Analysis API, named errors, pagination and artifacts
 internal/dap/                 Generic DAP framing, client, state and capabilities
 internal/dap/daptest/         Scripted in-memory DAP adapter for tests
@@ -237,6 +240,7 @@ docs/artifacts.md             Run directory layout and manifests
 docs/valgrind.md              Memcheck pipeline, report schema and limits
 docs/diff.md                  Fingerprint pairing, compatibility and diff semantics
 docs/sanitizers.md            ASan/UBSan/LSan/TSan execution, parsing and limits
+docs/ctest.md                 CTest project discovery, selection and reports
 docs/dap.md                   DAP framing, client lifecycle, state and limits
 docs/debugger.md              GDB/LLDB backends, debug API, lifecycle and limits
 docs/mcp.md                   MCP transport, tool discovery and payloads
@@ -247,7 +251,7 @@ scripts/preflight.sh          Read-only machine inventory
 .github/workflows/ci.yml      Continuous integration
 ```
 
-Further analysis packages (`profile`, `ctest`, ...) are
+Further analysis packages (`profile`, ...) are
 introduced by their milestones.
 
 ## Development

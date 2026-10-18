@@ -430,8 +430,8 @@ func (s *Service) Status(ctx context.Context, req StatusRequest) (Status, error)
 	if run, ok := s.getRun(req.RunID); ok {
 		return s.statusFromLive(run), nil
 	}
-	if !s.store.RunExists(req.RunID) {
-		return Status{}, Errorf(CodeRunNotFound, "run %q does not exist", req.RunID)
+	if err := s.ensureAnalysisRun(req.RunID); err != nil {
+		return Status{}, err
 	}
 	return s.statusFromDisk(ctx, req.RunID)
 }
@@ -475,8 +475,8 @@ func (s *Service) Cancel(ctx context.Context, req CancelRequest) (CancelResult, 
 			Message:         "cancellation requested; the process group receives SIGTERM then SIGKILL",
 		}, nil
 	}
-	if !s.store.RunExists(req.RunID) {
-		return CancelResult{}, Errorf(CodeRunNotFound, "run %q does not exist", req.RunID)
+	if err := s.ensureAnalysisRun(req.RunID); err != nil {
+		return CancelResult{}, err
 	}
 	status, err := s.statusFromDisk(ctx, req.RunID)
 	if err != nil {
@@ -513,6 +513,9 @@ func (s *Service) Report(ctx context.Context, req ReportRequest) (ReportPage, er
 	}
 	limit, err := s.pageLimit(req.Limit)
 	if err != nil {
+		return ReportPage{}, err
+	}
+	if err := s.ensureAnalysisRun(req.RunID); err != nil {
 		return ReportPage{}, err
 	}
 
@@ -700,6 +703,12 @@ func (s *Service) Artifact(ctx context.Context, req ArtifactRequest) (ArtifactOu
 	if req.MaxBytes < 0 {
 		return ArtifactOutput{}, Errorf(CodeInvalidArgument, "max_bytes must not be negative")
 	}
+	if _, err := artifactFileName(ToolMemcheck, req.ArtifactType); err != nil {
+		return ArtifactOutput{}, err
+	}
+	if err := s.ensureAnalysisRun(req.RunID); err != nil {
+		return ArtifactOutput{}, err
+	}
 	name, err := s.artifactName(ctx, req.RunID, req.ArtifactType)
 	if err != nil {
 		return ArtifactOutput{}, err
@@ -809,6 +818,17 @@ func (s *Service) artifactName(ctx context.Context, runID string, artifactType A
 		tool = manifest.Tool
 	}
 	return artifactFileName(tool, artifactType)
+}
+
+func (s *Service) ensureAnalysisRun(runID string) error {
+	if !s.store.RunExists(runID) {
+		return Errorf(CodeRunNotFound, "run %q does not exist", runID)
+	}
+	if manifest, err := readJobManifest(s.store, runID); err == nil &&
+		manifest.Tool != "" && !ValidTool(manifest.Tool) {
+		return Errorf(CodeRunNotFound, "run %q is not an analysis run", runID)
+	}
+	return nil
 }
 
 func isSanitizerTool(tool string) bool {

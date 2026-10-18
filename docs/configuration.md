@@ -26,6 +26,7 @@ never modifies the machine.
 | `policy` | object | no | Defaults to `safe-default`, no elevated permission. |
 | `limits` | object | no | Missing limits are replaced by defaults. |
 | `valgrind` | object | no | Optional suppression profiles for Memcheck. |
+| `ctest` | object | no | Trusted CTest projects and per-test timeout. |
 
 ### Path rules
 
@@ -64,7 +65,7 @@ arguments. Arguments are always passed as a list, never through a shell.
 ### `backends`
 
 ```json
-{"valgrind": true, "gdb": true, "lldb": false, "sanitizers": false}
+{"valgrind": true, "gdb": true, "lldb": false, "sanitizers": false, "ctest": false}
 ```
 
 Enabling a backend allows probing and tool exposure. It never installs software.
@@ -76,7 +77,9 @@ sanitizer backend does not build or instrument binaries. Each of `asan_run`,
 `ubsan_run`, `lsan_run` and `tsan_run` is published only when the backend is
 enabled and at least one usable target declares that sanitizer. The declaration
 is an administrator trust statement; the capability requires the declared
-target's program and cwd to be currently usable. GDB is
+target's program and cwd to be currently usable. CTest is enabled separately;
+its discovery and run tools require `backend.ctest` and a usable trusted
+`ctest.projects[]` entry. GDB is
 functionally
 probed by launching `gdb --quiet --nx --interpreter=dap` and completing the DAP
 `initialize` handshake without loading a target. LLDB is probed by discovering
@@ -170,6 +173,7 @@ A capability change reconciles `tools/list` and emits
 | Valgrind Helgrind | `valgrind` | `backend.valgrind.helgrind` available when `--tool=helgrind --help` verifies the tool |
 | Valgrind DRD | `valgrind` | `backend.valgrind.drd` available when `--tool=drd --help` verifies the tool |
 | Sanitizers | target declarations | `backend.sanitizer.<tool>` available when enabled and at least one usable target declares that tool; runtime instrumentation is trusted, not probed |
+| CTest | `ctest` | `backend.ctest` available when `ctest --help` exposes the fixed discovery, JUnit, selection, timeout, output and fixture-exclusion options used by the server; CTest tools additionally require a usable project |
 | GDB | `gdb` | `available` when the DAP `initialize` handshake succeeds; no target is loaded |
 | LLDB | `lldb-dap`, `lldb-dap-<N>` | `available` when a versioned-discovery candidate completes the DAP `initialize` handshake; no target is loaded |
 
@@ -209,3 +213,40 @@ reported as "no errors".
 [`config.example.json`](../config.example.json) is a complete document. Replace
 the paths with directories that exist on your machine and run
 `validate-config` first.
+
+### `ctest`
+
+```json
+{
+  "ctest": {
+    "test_timeout_seconds": 30,
+    "projects": [
+      {
+        "id": "solver-tests",
+        "test_dir": "/home/user/work/native-project/build",
+        "allowed_tests": ["Core.basic", "Core.io"],
+        "profiles": {"quick": ["Core.basic"]}
+      }
+    ]
+  }
+}
+```
+
+`test_dir` is the directory containing `CTestTestfile.cmake`; it must be an
+absolute directory inside `workspace_roots`. The server never configures or
+builds the project. `allowed_tests` is the complete exact-name allowlist: CTest
+discovery is filtered to these names, and `ctest_run` rejects an unlisted test,
+a duplicate, or a client-supplied regex. Profiles are named subsets of
+`allowed_tests`.
+
+`test_timeout_seconds` is the default per-test CTest `--timeout` and also the
+maximum a request may shorten. The overall run timeout is bounded by
+`limits.timeout_seconds`. CTest may apply a test-specific `TIMEOUT` property;
+after parsing, the server checks a passed test's JUnit duration against the
+requested per-test limit and downgrades an over-limit test to `timeout`. It
+never turns missing or unparsable evidence into a passed run.
+
+`ctest_discover` and `ctest_run` are published only when `backend.ctest` is
+available and at least one declared project has a usable test directory. The
+other CTest tools (`ctest_status`, `ctest_cancel`, `ctest_report`,
+`ctest_artifact`) stay published for persisted runs.

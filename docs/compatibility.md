@@ -1,8 +1,8 @@
 # Compatibility inventory
 
 Recorded on 2026-10-18 from a **read-only** inspection of the reference development
-machine and refreshed at J9 from a read-only inspection plus real GDB/LLDB,
-Helgrind/DRD and ASan/UBSan/LSan/TSan tests.
+machine and refreshed at J10 from a read-only inspection plus real GDB/LLDB,
+Helgrind/DRD, ASan/UBSan/LSan/TSan and CTest project tests.
 Re-run `./scripts/preflight.sh` after changing the toolchain and update this
 table; CI runners may differ.
 
@@ -41,7 +41,7 @@ Transitive modules are pinned in `go.sum`. `./scripts/check.sh` runs
 |---|---|---|---|
 | Go toolchain | available (1.27.0) | build and tests enabled | J0 |
 | gcc / g++ | available (15.2.0) | C/C++ fixtures and `-race` enabled | J2+ |
-| cmake / ctest | available (4.2.3) | CTest integration possible | J10 |
+| cmake / ctest | available (4.2.3); CTest JSON/JUnit options probed and real fixture executed | Trusted CTest discovery/execution and reports available | J10 |
 | gdb | available (17.1); DAP `initialize` verified | `backend.gdb` becomes `available`; GDB debug sessions are exposed while it remains available | J6 |
 | gdbserver | available (17.1); not probed | remote/`vgdb` scenarios possible but experimental | J13 |
 | valgrind | available (3.26.0); Memcheck, Helgrind and DRD XML probes pass | Memcheck pipeline, `helgrind_run` and `drd_run` exposed while their capabilities are available | J3/J4/J9 |
@@ -56,11 +56,12 @@ Transitive modules are pinned in `go.sum`. `./scripts/check.sh` runs
 
 Suggested explicit installation (human decision, never performed by the server):
 
-At J9, Valgrind, GDB, LLDB, Clang, Ninja, ShellCheck, gdbserver,
+At J10, Valgrind, GDB, LLDB, Clang, CMake/CTest, Ninja, ShellCheck, gdbserver,
 `callgrind_annotate` and `ms_print` are installed. No package was installed for
-J9; the real GDB/LLDB tests use the existing GDB 17.1 and LLDB 21.1.8 packages,
-and the sanitizer tests use the existing GCC 15.2 sanitizer runtimes. The diff
-tests are deterministic and need no additional toolchain.
+J10; the real GDB/LLDB tests use the existing GDB 17.1 and LLDB 21.1.8 packages,
+the sanitizer tests use the existing GCC 15.2 sanitizer runtimes, and the CTest
+tests use CMake/CTest 4.2.3. The diff tests are deterministic and need no
+additional toolchain.
 
 `lldb-dap` is shipped here as both `lldb-dap` and `lldb-dap-21`; discovery handles
 both names, prefers the unsuffixed adapter, orders versioned candidates newest
@@ -101,6 +102,9 @@ Read only; the project never modifies these values.
   the binary and target policy. The LLDB probe discovers `lldb-dap` and
   `lldb-dap-<N>` in absolute PATH directories, verifies `initialize` with fixed
   init settings and never loads a target.
+- `backend.ctest` is available after the fixed `ctest --help` probe; the CTest
+  discovery/run tools additionally require a usable `CTestTestfile.cmake`
+  project directory. Evidence tools stay published for persisted CTest runs.
 - `diagnostics_diff` is published whenever the analysis service exists, even
   when Valgrind is unavailable. It compares persisted reports only. New reports
   use `sha256-v2`; v1/v2 pairs are `incompatible_runs`. Downgrading
@@ -159,9 +163,10 @@ Read only; the project never modifies these values.
   At J6, `backend.gdb` became `available` after the DAP handshake. At J7,
   `backend.lldb` is also `available` through `lldb-dap` 21.1.8 and its
   versioned-discovery probe. At J8, diagnostics_diff compares persisted reports
-  without running a program; new reports carry fingerprint v2. Neither capability
-  probe runs a user program, but every `debug_start` executes the declared target,
-  which remains untrusted code.
+  without running a program; new reports carry fingerprint v2. J9 added
+  Helgrind/DRD and sanitizer runs; J10 added CTest discovery/execution. No
+  capability probe runs a user program, but every analysis/debug/CTest start
+  executes code declared by the administrator, which remains untrusted code.
 - Valgrind support varies with kernel, architecture and instruction set. The J3
   probe checks `--version` plus the Memcheck XML options in `--tool=memcheck
   --help`; the first authorized fixture run revalidates the binary. A help check

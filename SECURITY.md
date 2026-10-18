@@ -21,7 +21,7 @@ Use GitHub's private vulnerability reporting on this repository
 You will receive an acknowledgement and a remediation plan. Please allow time for
 a fix before public disclosure.
 
-## Current surface (J9)
+## Current surface (J10)
 
 - `serve` starts an MCP server over stdin/stdout. stdout carries only JSON-RPC
   messages; logs and errors go to stderr.
@@ -42,6 +42,16 @@ a fix before public disclosure.
   a fixed `log_path` file and parsed as untrusted text; target stderr is never
   treated as sanitizer evidence. A clean concurrency run is not proof of
   absence.
+- `ctest_discover` runs only `ctest --show-only=json-v1` in a configured trusted
+  `test_dir`; it does not execute tests. `ctest_run` executes exact allowlisted
+  tests or a configured profile, with a quoted exact-name `--tests-regex`, no
+  build, no client regex and no arbitrary CTest flags. Declaring the project is
+  the trust boundary: `CTestTestfile.cmake` may execute arbitrary reviewed test
+  commands. The server adds no sandbox around a hostile project.
+- `ctest_status`, `ctest_report` and `ctest_artifact` are read-only and never
+  launch CTest. `ctest_cancel` only signals a run owned by this server process.
+  CTest JUnit output is untrusted, bounded XML; missing/unparsable evidence is
+  `incomplete`.
 - `analysis_status`, `analysis_report`, `analysis_artifact` and
   `diagnostics_diff` are read-only and never launch a program. `analysis_cancel`
   only signals a run that this server process owns or acknowledges that a
@@ -70,13 +80,16 @@ a fix before public disclosure.
   is available when the backend is enabled and at least one usable target
   declares that sanitizer build. It does not prove the runtime is present; the declaration is
   an administrator trust statement and the corresponding `<tool>_run` revalidates
-  it. Probes are
+  it. The CTest probe runs only `ctest --help` and verifies fixed discovery/JUnit
+  options; it never runs a test. CTest discovery/run tools additionally require
+  a usable project directory. Probes are
   bounded (5-second timeout, bounded output, minimal environment), never run a
   user program and never use sudo. Relative `PATH` entries are rejected.
 - `analysis_start` is published only while `backend.valgrind` is `available`;
   `helgrind_run`/`drd_run` use their own tool capabilities and each sanitizer
   tool requires its own `backend.sanitizer.<tool>` capability plus a matching
-  target declaration. Backend
+  target declaration. `ctest_discover`/`ctest_run` require `backend.ctest` and a
+  usable trusted project; CTest evidence tools stay published for persisted runs. Backend
   availability is revalidated at invocation and the Valgrind binary is
   revalidated immediately before each run. The evidence tools stay published so
   an in-flight or persisted run remains queryable if the backend disappears.
@@ -128,6 +141,9 @@ a fix before public disclosure.
   `supportTerminateDebuggee`, but no detach path was proven to preserve the
   inferior (the GDB test failed). `debug_stop(terminate=true)` never relies
   solely on that capability.
+- CTest artifacts are logical types only (`junit`, `stdout`, `stderr`, `report`),
+  opened through the artifact store with `O_NOFOLLOW` and bounded excerpts; no
+  filesystem path is returned. CTest stdout/stderr and JUnit are untrusted.
 - Analysis artifacts are logical types only. Valgrind raw XML and sanitizer
   `sanitizer.log` logs are opened through the artifact store with `O_NOFOLLOW`
   and bounded excerpts; no filesystem path is returned. A hostile target runs as

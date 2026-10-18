@@ -16,6 +16,7 @@ import (
 	"github.com/Morditux/traceanvil-mcp/internal/artifacts"
 	"github.com/Morditux/traceanvil-mcp/internal/capabilities"
 	"github.com/Morditux/traceanvil-mcp/internal/config"
+	"github.com/Morditux/traceanvil-mcp/internal/ctest"
 	"github.com/Morditux/traceanvil-mcp/internal/debugger"
 	"github.com/Morditux/traceanvil-mcp/internal/jobs"
 	"github.com/Morditux/traceanvil-mcp/internal/mcpserver"
@@ -121,6 +122,39 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		}
 	}
 
+	var ctestService *ctest.Service
+	if cfg.Backends.CTest {
+		ctestService, err = ctest.NewService(ctest.ServiceOptions{
+			Store:   store,
+			Manager: manager,
+			Runner:  runner.New(),
+			Binary: func() (string, string, error) {
+				record, ok := registry.Get(capabilities.BackendCTest)
+				if !ok {
+					return "", "", errors.New("ctest capability is not registered")
+				}
+				if record.State != capabilities.StateAvailable || record.Path == "" {
+					reason := record.Reason
+					if reason == "" {
+						reason = "ctest is " + string(record.State)
+					}
+					return "", "", errors.New(reason)
+				}
+				return record.Path, record.Version, nil
+			},
+			Roots:              resolver.ResolvedRoots(),
+			Projects:           cfg.CTest.Projects,
+			DefaultTestTimeout: time.Duration(cfg.CTest.TestTimeoutSeconds) * time.Second,
+			MaxTimeout:         time.Duration(cfg.Limits.TimeoutSeconds) * time.Second,
+			MaxReportBytes:     store.MaxBytesPerRun(),
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "mcp-native-diagnostics: %v\n", err)
+			return ExitFailure
+		}
+		cleanups = append(cleanups, ctestService.Close)
+	}
+
 	maxReportBytes := store.MaxBytesPerRun()
 	if maxReportBytes > analysis.DefaultMaxReportBytes {
 		maxReportBytes = analysis.DefaultMaxReportBytes
@@ -188,6 +222,14 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		for _, definition := range mcpserver.DebugDefinitions(debugService, registry) {
 			if err := server.Register(definition); err != nil {
 				logger.Error("register debug tool", "tool", definition.Name, "error", err)
+				return ExitFailure
+			}
+		}
+	}
+	if ctestService != nil {
+		for _, definition := range mcpserver.CTestDefinitions(ctestService, registry) {
+			if err := server.Register(definition); err != nil {
+				logger.Error("register ctest tool", "tool", definition.Name, "error", err)
 				return ExitFailure
 			}
 		}

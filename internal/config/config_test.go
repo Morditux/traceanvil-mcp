@@ -17,7 +17,14 @@ func validJSON() string {
 		"allowed_targets": [
 			{"id": "fixture", "program": "/tmp/ws/build/fixture", "cwd": "/tmp/ws", "allowed_args": ["--one"], "sanitizers": ["asan", "tsan"]}
 		],
-		"backends": {"valgrind": true, "gdb": false, "lldb": false, "sanitizers": true},
+		"ctest": {
+			"projects": [
+				{"id": "tests", "test_dir": "/tmp/ws/build", "allowed_tests": ["pass", "fail"],
+				 "profiles": {"quick": ["pass"]}}
+			],
+			"test_timeout_seconds": 30
+		},
+		"backends": {"valgrind": true, "gdb": false, "lldb": false, "sanitizers": true, "ctest": true},
 		"policy": {"profile": "safe-default", "attach": false, "evaluate": false},
 		"limits": {"timeout_seconds": 60, "max_jobs": 1, "max_sessions": 1,
 		           "max_report_bytes": 4096, "max_response_items": 10}
@@ -36,11 +43,14 @@ func TestParseValid(t *testing.T) {
 	if got := cfg.AllowedTargets[0].Program; got != "/tmp/ws/build/fixture" {
 		t.Errorf("Program = %q, want the cleaned absolute path", got)
 	}
-	if !cfg.Backends.Valgrind || cfg.Backends.GDB || cfg.Backends.LLDB || !cfg.Backends.Sanitizers {
-		t.Errorf("backends = %+v, want valgrind and sanitizers only", cfg.Backends)
+	if !cfg.Backends.Valgrind || cfg.Backends.GDB || cfg.Backends.LLDB || !cfg.Backends.Sanitizers || !cfg.Backends.CTest {
+		t.Errorf("backends = %+v, want valgrind, sanitizers and ctest only", cfg.Backends)
 	}
 	if len(cfg.AllowedTargets[0].Sanitizers) != 2 {
 		t.Errorf("sanitizers = %v", cfg.AllowedTargets[0].Sanitizers)
+	}
+	if len(cfg.CTest.Projects) != 1 || cfg.CTest.Projects[0].TestDir != "/tmp/ws/build" {
+		t.Errorf("ctest = %+v", cfg.CTest)
 	}
 	if cfg.Policy.Profile != ProfileSafeDefault {
 		t.Errorf("Profile = %q, want %q", cfg.Policy.Profile, ProfileSafeDefault)
@@ -77,6 +87,9 @@ func TestParseAppliesDefaults(t *testing.T) {
 	}
 	if cfg.Limits.MaxResponseItems != DefaultMaxResponseItems {
 		t.Errorf("MaxResponseItems = %d, want %d", cfg.Limits.MaxResponseItems, DefaultMaxResponseItems)
+	}
+	if cfg.CTest.TestTimeoutSeconds != DefaultCTestTimeout {
+		t.Errorf("CTest timeout = %d, want %d", cfg.CTest.TestTimeoutSeconds, DefaultCTestTimeout)
 	}
 }
 
@@ -213,6 +226,27 @@ func TestValidateErrors(t *testing.T) {
 			name:    "duplicate sanitizer",
 			mutate:  func(c *Config) { c.AllowedTargets[0].Sanitizers = []string{"asan", "asan"} },
 			wantErr: "duplicate sanitizer",
+		},
+		{
+			name: "ctest project outside roots",
+			mutate: func(c *Config) {
+				c.CTest.Projects[0].TestDir = "/tmp/outside"
+			},
+			wantErr: "inside workspace_roots",
+		},
+		{
+			name: "ctest profile unknown test",
+			mutate: func(c *Config) {
+				c.CTest.Projects[0].Profiles["quick"] = []string{"unknown"}
+			},
+			wantErr: "not in allowed_tests",
+		},
+		{
+			name: "ctest duplicate allowed test",
+			mutate: func(c *Config) {
+				c.CTest.Projects[0].AllowedTests = []string{"pass", "pass"}
+			},
+			wantErr: "duplicate test name",
 		},
 		{
 			name:    "invalid profile",

@@ -55,6 +55,12 @@ support dynamic lists must reconnect.
 | `analysis_report` | no | — | yes |
 | `analysis_artifact` | no | — | yes |
 | `diagnostics_diff` | no (compares two persisted reports) | — | yes |
+| `ctest_discover` | no (runs `ctest --show-only`, no test execution) | `backend.ctest` + usable project | yes |
+| `ctest_run` | **yes**, exact allowlisted CTest tests | `backend.ctest` + usable project | no |
+| `ctest_status` | no | — | yes |
+| `ctest_cancel` | no (signals a run started by this server) | — | no |
+| `ctest_report` | no | — | yes |
+| `ctest_artifact` | no | — | yes |
 | `debug_start` | **yes**, an allowlisted target under GDB or LLDB | one debugger backend and a usable target | no |
 | `debug_status` | no | a debugger backend or a retained session | yes |
 | `debug_set_breakpoints` | no | at least one debugger backend | no |
@@ -69,7 +75,7 @@ support dynamic lists must reconnect.
 
 ## Shared conventions
 
-- Every payload has a `schema_version` (`1` at J4–J9). It changes only for an
+- Every payload has a `schema_version` (`1` at J4–J10). It changes only for an
   incompatible shape change; additive fields keep the version.
 - `run_id` is an opaque `run_<32 lowercase hex>` identifier. It is not a path.
 - `session_id` is an opaque `dbg_<32 lowercase hex>` identifier. It is not a
@@ -355,6 +361,22 @@ configuration must include the requested value. The raw evidence is
 `sanitizer.log`, exposed as artifact type `raw_log`; target stderr is a separate
 `stderr` artifact and is not parsed as sanitizer evidence. Each tool is gated by
 its own `backend.sanitizer.<tool>` capability.
+
+## CTest tools
+
+CTest integration is opt-in through trusted `ctest.projects`. The server never
+configures or builds a project and never accepts a project path, test regex or
+arbitrary CTest flag from the client. `ctest_discover` runs
+`ctest --show-only=json-v1` without executing tests and filters names through
+`allowed_tests`. `ctest_run` selects exact allowed tests or a configured profile,
+runs them asynchronously and returns a run id for `ctest_status`/`ctest_report`.
+Per-test CTest timeout is bounded by `ctest.test_timeout_seconds`; the overall
+timeout by `limits.timeout_seconds`.
+
+`ctest_report` is bounded and reports `passed`, `failed`, `timeout`, `skipped`
+and `not_run`; missing/unparsable JUnit evidence and skipped selected tests
+yield `incomplete`, never a pass. Artifacts are `junit` (`ctest.xml`), `stdout`, `stderr` and `report`
+(`ctest.json`). See [ctest.md](ctest.md).
 
 ## `diagnostics_diff`
 

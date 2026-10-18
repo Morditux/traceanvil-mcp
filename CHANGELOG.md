@@ -162,6 +162,16 @@ released yet; milestones map to the development plan.
   `raw_log` artifacts; diff refuses different analysis tools.
 - J9: concurrency/sanitizer C fixtures, real Helgrind/DRD and real
   ASan/UBSan/LSan/TSan integration tests, and ADR 0012/`docs/sanitizers.md`.
+- J10: trusted CTest project/profile configuration (`ctest.projects`), exact
+  `allowed_tests`, bounded `ctest --show-only=json-v1` discovery and exact-name
+  selection. No build, shell, client regex or arbitrary CTest flags are exposed.
+- J10: asynchronous `ctest_run`/`ctest_status`/`ctest_cancel` with overall and
+  per-test limits, bounded JUnit parsing, `passed`/`failed`/`timeout`/`skipped`/
+  `not_run` association and incomplete-evidence semantics.
+- J10: `ctest_report` and `ctest_artifact` bounded evidence, with raw
+  `ctest.xml`, `stdout.log`, `stderr.log` and normalized `ctest.json`.
+- J10: `backend.ctest` fixed-option capability probe, MCP schemas/gating, real
+  CMake/CTest fixture and real MCP workflow test; ADR 0013/`docs/ctest.md`.
 
 ### Changed
 
@@ -212,6 +222,9 @@ released yet; milestones map to the development plan.
 - J9: sanitizer targets must declare their instrumentation; enabling the
   sanitizer backend alone does not expose a `<tool>_run` tool without a matching
   declaration.
+- J10: `ctest_discover` and `ctest_run` are hidden unless `backend.ctest` is
+  available and a declared project directory contains `CTestTestfile.cmake`.
+  CTest evidence tools remain available for persisted runs.
 
 ### Security
 
@@ -279,6 +292,10 @@ released yet; milestones map to the development plan.
 - J9: sanitizer logs are untrusted, byte/line/issue/frame bounded evidence. A
   clean concurrency run is never presented as proof of absence; unknown or
   truncated sanitizer output is incomplete.
+- J10: CTest projects are trusted declarations; the server never configures or
+  builds them. JUnit is untrusted, bounded XML and missing/unparsable evidence
+  is incomplete. A passed selected-test report is not a claim about unselected
+  or undiscovered tests.
 - J9: sanitizer instrumentation is an explicit target declaration, not inferred
   from a filename; no client environment or sanitizer flags are accepted.
 

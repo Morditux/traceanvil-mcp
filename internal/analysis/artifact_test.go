@@ -354,3 +354,27 @@ func TestRawXMLArtifactUsesManifestToolWithoutFallback(t *testing.T) {
 	})
 	mustCode(t, err, CodeArtifactUnavailable)
 }
+
+func TestAnalysisAPIRejectsCTestRuns(t *testing.T) {
+	store := newTestStore(t)
+	service := newTestService(t, store, newFakeBackend(), nil)
+	runID := "run_00000000000000000000000000000051"
+	data, err := json.Marshal(jobs.Snapshot{
+		SchemaVersion: jobs.SchemaVersion, RunID: runID, TargetID: "fixture",
+		Tool: "ctest", State: jobs.StateCompleted,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFilesAt(t, store, runID, map[string][]byte{
+		jobs.ManifestName: data,
+		"stdout.log":      []byte("ctest output"),
+	})
+	ctx := context.Background()
+	_, err = service.Status(ctx, StatusRequest{RunID: runID})
+	mustCode(t, err, CodeRunNotFound)
+	_, err = service.Artifact(ctx, ArtifactRequest{RunID: runID, ArtifactType: ArtifactStdout})
+	mustCode(t, err, CodeRunNotFound)
+	_, err = service.Artifact(ctx, ArtifactRequest{RunID: runID, ArtifactType: ArtifactRawXML})
+	mustCode(t, err, CodeRunNotFound)
+}

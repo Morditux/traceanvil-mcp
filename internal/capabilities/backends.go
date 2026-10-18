@@ -16,6 +16,7 @@ const (
 	BackendSanitizerUBSan   = "backend.sanitizer.ubsan"
 	BackendSanitizerLSan    = "backend.sanitizer.lsan"
 	BackendSanitizerTSan    = "backend.sanitizer.tsan"
+	BackendCTest            = "backend.ctest"
 )
 
 // NewConfigProbes builds the discovery probes implied by configuration.
@@ -55,6 +56,14 @@ func NewConfigProbes(cfg *config.Config) []Probe {
 		NewSanitizerProbe(cfg.Backends.Sanitizers, policy.New(cfg), "ubsan"),
 		NewSanitizerProbe(cfg.Backends.Sanitizers, policy.New(cfg), "lsan"),
 		NewSanitizerProbe(cfg.Backends.Sanitizers, policy.New(cfg), "tsan"),
+		NewBinaryProbe(BackendCTest, "ctest", "ctest", cfg.Backends.CTest,
+			[]string{"json-v1", "junit", "tests-regex", "fixture-exclude-any"}).
+			WithFunctionalCheck(
+				[]string{"--help"},
+				[]string{"--show-only", "json-v1", "--output-junit", "--tests-regex",
+					"--fixture-exclude-any", "--no-tests", "--timeout", "--output-on-failure"},
+			).
+			WithNote("CTest JSON discovery and JUnit options verified; no test was run"),
 		NewGDBProbe(cfg.Backends.GDB).
 			WithNote("no user program was run"),
 		NewLLDBProbe(cfg.Backends.LLDB).

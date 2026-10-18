@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // SchemaVersion is the only configuration schema understood by this build.
@@ -33,6 +34,11 @@ const (
 	MaxSuppressionProfiles  = 32
 	MaxSuppressionFileBytes = 1 << 20
 	MaxSanitizersPerTarget  = 4
+	MaxCTestProjects        = 32
+	MaxCTestAllowedTests    = 512
+	MaxCTestProfiles        = 32
+	MaxCTestProfileTests    = 256
+	MaxCTestNameBytes       = 512
 )
 
 // Defaults applied when a limit is omitted (zero).
@@ -42,6 +48,7 @@ const (
 	DefaultMaxSessions      = 2
 	DefaultMaxResponseItems = 100
 	DefaultMaxReportBytes   = 10 << 20
+	DefaultCTestTimeout     = 30
 )
 
 // Accepted ranges for limits.
@@ -52,6 +59,7 @@ const (
 	MinMaxReportBytes = 1024
 	MaxMaxReportBytes = 1 << 30
 	MaxResponseItems  = 10000
+	MaxCTestTimeout   = 600
 )
 
 const (
@@ -82,6 +90,22 @@ type Config struct {
 	Policy         Policy   `json:"policy"`
 	Limits         Limits   `json:"limits"`
 	Valgrind       Valgrind `json:"valgrind"`
+	CTest          CTest    `json:"ctest"`
+}
+
+// CTest holds trusted CTest projects and per-test defaults.
+type CTest struct {
+	Projects           []CTestProject `json:"projects,omitempty"`
+	TestTimeoutSeconds int            `json:"test_timeout_seconds,omitempty"`
+}
+
+// CTestProject declares one trusted CTest test directory. The server never
+// builds it and only runs tests whose exact names are allowlisted here.
+type CTestProject struct {
+	ID           string              `json:"id"`
+	TestDir      string              `json:"test_dir"`
+	AllowedTests []string            `json:"allowed_tests,omitempty"`
+	Profiles     map[string][]string `json:"profiles,omitempty"`
 }
 
 // Valgrind holds optional Valgrind-specific configuration.
@@ -110,6 +134,7 @@ type Backends struct {
 	GDB        bool `json:"gdb"`
 	LLDB       bool `json:"lldb"`
 	Sanitizers bool `json:"sanitizers"`
+	CTest      bool `json:"ctest"`
 }
 
 // Policy records the trust profile and explicit elevated permissions.
@@ -314,6 +339,9 @@ func (c *Config) Validate() error {
 	if err := c.validateValgrind(roots); err != nil {
 		return err
 	}
+	if err := c.validateCTest(roots); err != nil {
+		return err
+	}
 	return c.validateLimits()
 }
 
@@ -340,6 +368,100 @@ func (c *Config) validateValgrind(roots []string) error {
 			return fieldError(field, "must be inside workspace_roots")
 		}
 		c.Valgrind.Suppressions[id] = path
+	}
+	return nil
+}
+
+func (c *Config) validateCTest(roots []string) error {
+	if len(c.CTest.Projects) > MaxCTestProjects {
+		return fieldError("ctest.projects", "at most %d projects are allowed", MaxCTestProjects)
+	}
+	if c.CTest.TestTimeoutSeconds < 1 || c.CTest.TestTimeoutSeconds > MaxCTestTimeout {
+		return fieldError("ctest.test_timeout_seconds", "must be between 1 and %d", MaxCTestTimeout)
+	}
+	seenIDs := make(map[string]struct{}, len(c.CTest.Projects))
+	for i := range c.CTest.Projects {
+		project := &c.CTest.Projects[i]
+		field := fmt.Sprintf("ctest.projects[%d]", i)
+		if !targetIDPattern.MatchString(project.ID) {
+			return fieldError(field+".id", "must match %s", targetIDPattern)
+		}
+		if _, duplicate := seenIDs[project.ID]; duplicate {
+			return fieldError(field+".id", "duplicate project id %q", project.ID)
+		}
+		seenIDs[project.ID] = struct{}{}
+
+		testDir, err := normalizePath(field+".test_dir", project.TestDir)
+		if err != nil {
+			return err
+		}
+		if err := rejectSensitivePath(field+".test_dir", testDir); err != nil {
+			return err
+		}
+		if !pathWithinAny(roots, testDir) {
+			return fieldError(field+".test_dir", "must be inside workspace_roots")
+		}
+		project.TestDir = testDir
+
+		if len(project.AllowedTests) > MaxCTestAllowedTests {
+			return fieldError(field+".allowed_tests", "at most %d tests are allowed", MaxCTestAllowedTests)
+		}
+		allowed := make(map[string]struct{}, len(project.AllowedTests))
+		for j, name := range project.AllowedTests {
+			testField := fmt.Sprintf("%s.allowed_tests[%d]", field, j)
+			if err := validateCTestName(testField, name); err != nil {
+				return err
+			}
+			if _, duplicate := allowed[name]; duplicate {
+				return fieldError(testField, "duplicate test name %q", name)
+			}
+			allowed[name] = struct{}{}
+		}
+		if len(project.Profiles) > MaxCTestProfiles {
+			return fieldError(field+".profiles", "at most %d profiles are allowed", MaxCTestProfiles)
+		}
+		for profileID, tests := range project.Profiles {
+			profileField := field + ".profiles[" + profileID + "]"
+			if !targetIDPattern.MatchString(profileID) {
+				return fieldError(profileField, "profile id must match %s", targetIDPattern)
+			}
+			if len(tests) == 0 {
+				return fieldError(profileField, "must select at least one test")
+			}
+			if len(tests) > MaxCTestProfileTests {
+				return fieldError(profileField, "at most %d tests are allowed", MaxCTestProfileTests)
+			}
+			seenTests := make(map[string]struct{}, len(tests))
+			for j, name := range tests {
+				testField := fmt.Sprintf("%s[%d]", profileField, j)
+				if err := validateCTestName(testField, name); err != nil {
+					return err
+				}
+				if _, duplicate := seenTests[name]; duplicate {
+					return fieldError(testField, "duplicate test name %q", name)
+				}
+				seenTests[name] = struct{}{}
+				if _, ok := allowed[name]; !ok {
+					return fieldError(testField, "test %q is not in allowed_tests", name)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func validateCTestName(field, name string) error {
+	if name == "" {
+		return fieldError(field, "must not be empty")
+	}
+	if name != strings.TrimSpace(name) {
+		return fieldError(field, "must not have leading or trailing whitespace")
+	}
+	if strings.ContainsFunc(name, unicode.IsControl) {
+		return fieldError(field, "must not contain control characters")
+	}
+	if len(name) > MaxCTestNameBytes {
+		return fieldError(field, "must be at most %d bytes", MaxCTestNameBytes)
 	}
 	return nil
 }
@@ -379,6 +501,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Limits.MaxResponseItems == 0 {
 		c.Limits.MaxResponseItems = DefaultMaxResponseItems
+	}
+	if c.CTest.TestTimeoutSeconds == 0 {
+		c.CTest.TestTimeoutSeconds = DefaultCTestTimeout
 	}
 }
 
