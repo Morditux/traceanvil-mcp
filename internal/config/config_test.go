@@ -456,3 +456,27 @@ func TestParseValgrindSuppressionsCardinality(t *testing.T) {
 		t.Fatal("Parse() accepted too many suppression profiles")
 	}
 }
+
+func TestParseAttachAndCoreProfiles(t *testing.T) {
+	doc := `{
+		"schema_version": 1,
+		"workspace_roots": ["/tmp/ws"],
+		"report_dir": "/tmp/ws-reports",
+		"allowed_targets": [],
+		"backends": {"gdb": true},
+		"policy": {"profile": "elevated-local", "attach": true, "evaluate": false,
+		           "attach_allowed_pids": [1234, 5678]},
+		"cores": [{"id": "crash", "executable": "/tmp/ws/build/fixture", "core": "/tmp/ws/core"}],
+		"limits": {}
+	}`
+	cfg, err := Parse(strings.NewReader(doc))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if len(cfg.Policy.AttachAllowedPIDs) != 2 || len(cfg.Cores) != 1 {
+		t.Fatalf("cfg = %+v", cfg)
+	}
+	if cfg.Cores[0].Core != "/tmp/ws/core" {
+		t.Errorf("core = %q", cfg.Cores[0].Core)
+	}
+}

@@ -71,6 +71,7 @@ type Status struct {
 	Backend        string       `json:"backend"`
 	BackendVersion string       `json:"backend_version,omitempty"`
 	TargetID       string       `json:"target_id,omitempty"`
+	Attached       bool         `json:"attached,omitempty"`
 	State          State        `json:"state"`
 	StopGeneration int          `json:"stop_generation"`
 	Stop           *Stop        `json:"stop,omitempty"`
@@ -91,6 +92,15 @@ type StartRequest struct {
 	Backend     string   `json:"backend,omitempty" jsonschema:"debugger backend: gdb (default when usable) or lldb"`
 	Args        []string `json:"args,omitempty" jsonschema:"program arguments; each must be declared in the target's allowed_args"`
 	StopOnEntry *bool    `json:"stop_on_entry,omitempty" jsonschema:"stop at the process entry point before running (default true)"`
+}
+
+// AttachRequest is the input of debug_attach. The process must be in the
+// administrator's explicit attach allowlist and satisfy local ownership/Yama
+// checks.
+type AttachRequest struct {
+	PID         int    `json:"pid" jsonschema:"explicitly allowed process id"`
+	Backend     string `json:"backend,omitempty" jsonschema:"debugger backend: gdb (default when usable) or lldb"`
+	StopOnEntry *bool  `json:"stop_on_entry,omitempty" jsonschema:"request a stop before inspecting; attach defaults to false and may be paused explicitly"`
 }
 
 // StatusRequest is the input of debug_status.
@@ -294,7 +304,7 @@ type VariablesResult struct {
 // setting it to false is refused rather than reported as successful.
 type StopRequest struct {
 	SessionID string `json:"session_id" jsonschema:"opaque session id returned by debug_start"`
-	Terminate *bool  `json:"terminate,omitempty" jsonschema:"terminate the debuggee (default true); false is refused because detach is not implemented"`
+	Terminate *bool  `json:"terminate,omitempty" jsonschema:"terminate the debuggee; default true for launched sessions, false (detach) for attached sessions; false is refused for launched sessions"`
 }
 
 // StopResult is the output of debug_stop.

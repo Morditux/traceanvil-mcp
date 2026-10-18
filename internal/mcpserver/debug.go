@@ -12,6 +12,8 @@ import (
 // DebugService is the debugger business API consumed by the MCP handlers.
 type DebugService interface {
 	Start(context.Context, debugger.StartRequest) (debugger.Status, error)
+	Attach(context.Context, debugger.AttachRequest) (debugger.Status, error)
+	AttachAvailable() bool
 	Status(context.Context, debugger.StatusRequest) (debugger.Status, error)
 	SetBreakpoints(context.Context, debugger.BreakpointsRequest) (debugger.BreakpointsResult, error)
 	Continue(context.Context, debugger.ContinueRequest) (debugger.ActionResult, error)
@@ -30,6 +32,7 @@ type DebugService interface {
 func DebugToolNames() []string {
 	return []string{
 		"debug_start",
+		"debug_attach",
 		"debug_status",
 		"debug_set_breakpoints",
 		"debug_continue",
@@ -125,6 +128,35 @@ func DebugDefinitions(service DebugService, caps *capabilities.Registry) []ToolD
 					Annotations: mutationAnnotations("Start debug session", true),
 				}, func(ctx context.Context, _ *mcp.CallToolRequest, input debugger.StartRequest) (*mcp.CallToolResult, debugger.Status, error) {
 					status, err := service.Start(ctx, input)
+					return nil, status, err
+				})
+			},
+		},
+		{
+			Name:                 "debug_attach",
+			RequiredCapabilities: []string{capabilities.BackendGDB},
+			Available: func() (bool, capabilities.State, string) {
+				state, reason := backendState()
+				if state != capabilities.StateAvailable {
+					return false, state, reason
+				}
+				if !service.AttachAvailable() {
+					return false, state, "attach is disabled by policy or the PID allowlist is empty"
+				}
+				return true, state, reason
+			},
+			Add: func(server *mcp.Server) {
+				mcp.AddTool(server, &mcp.Tool{
+					Name: "debug_attach",
+					Description: "Attach one debugger session to an explicitly allowlisted PID after " +
+						"same-user ownership, workspace confinement, ptrace_scope and descendant checks. " +
+						"The process must be listed in policy.attach_allowed_pids with policy.attach=true " +
+						"under the elevated-local profile. Attach never changes sysctls or uses sudo. " +
+						"debug_stop defaults to detach for attached sessions; terminate=true may kill it " +
+						"only with policy.attach_terminate=true.",
+					Annotations: mutationAnnotations("Attach debugger", true),
+				}, func(ctx context.Context, _ *mcp.CallToolRequest, input debugger.AttachRequest) (*mcp.CallToolResult, debugger.Status, error) {
+					status, err := service.Attach(ctx, input)
 					return nil, status, err
 				})
 			},
@@ -287,9 +319,10 @@ func DebugDefinitions(service DebugService, caps *capabilities.Registry) []ToolD
 			Add: func(server *mcp.Server) {
 				mcp.AddTool(server, &mcp.Tool{
 					Name: "debug_stop",
-					Description: "Terminate a debug session and release its debugger process. Detach is not " +
-						"implemented: terminate=false is refused with unsupported_capability. Always available " +
-						"for an existing session, even if the backend later disappears.",
+					Description: "Close a debug session. Launched sessions terminate by default and refuse " +
+						"terminate=false. Attached sessions detach by default without terminating the target; " +
+						"terminate=true explicitly kills the attached process. Always available for an existing " +
+						"session, even if the backend later disappears.",
 					Annotations: mutationAnnotations("Stop debug session", true),
 				}, func(ctx context.Context, _ *mcp.CallToolRequest, input debugger.StopRequest) (*mcp.CallToolResult, debugger.StopResult, error) {
 					result, err := service.Stop(ctx, input)

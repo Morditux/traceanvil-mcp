@@ -131,6 +131,9 @@ func runServeDebugWorkflow(t *testing.T, backend string) {
 		t.Fatalf("ListTools(): %v", err)
 	}
 	for _, name := range mcpserver.DebugToolNames() {
+		if name == "debug_attach" {
+			continue
+		}
 		if !containsTool(tools.Tools, name) {
 			_ = session.Close()
 			waitForExit(t, cmd, &stderr)
@@ -138,10 +141,13 @@ func runServeDebugWorkflow(t *testing.T, backend string) {
 				name, toolNames(tools.Tools), stderr.String())
 		}
 	}
-	for _, forbidden := range []string{"debug_evaluate", "debug_attach", "debug_execute_command"} {
+	for _, forbidden := range []string{"debug_evaluate", "debug_execute_command"} {
 		if containsTool(tools.Tools, forbidden) {
 			t.Errorf("forbidden debug tool %q is published", forbidden)
 		}
+	}
+	if containsTool(tools.Tools, "debug_attach") {
+		t.Error("debug_attach is published without an explicit attach allowlist")
 	}
 
 	startArguments := map[string]any{"target_id": "fixture"}

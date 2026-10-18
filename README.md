@@ -14,7 +14,7 @@ The value of the project is not arbitrary command execution. It is:
 
 ## Project status
 
-**Early development — J10 (Helgrind, DRD, sanitizers and CTest) complete.**
+**Early development — J11 (cores, controlled attach and prior tooling) complete.**
 
 The repository now provides:
 
@@ -34,8 +34,9 @@ The repository now provides:
   `asan_run`, `ubsan_run`, `lsan_run`, `tsan_run`, `analysis_status`,
   `analysis_cancel`, `analysis_report`, `analysis_artifact`), the J8
   `diagnostics_diff` tool, the J10 CTest tools (`ctest_discover`, `ctest_run`,
-  `ctest_status`, `ctest_cancel`, `ctest_report`, `ctest_artifact`) and the
-  J6/J7 GDB/LLDB debug tools
+  `ctest_status`, `ctest_cancel`, `ctest_report`, `ctest_artifact`), the J11
+  `core_analyze`/`core_artifact`/`debug_attach` tools and the J6/J7 GDB/LLDB
+  debug tools
   (`debug_start`, `debug_status`, `debug_set_breakpoints`, `debug_continue`,
   `debug_pause`, `debug_step`, `debug_threads`, `debug_stack_trace`,
   `debug_scopes`, `debug_variables`, `debug_stop`). `debug_start` is published
@@ -205,7 +206,8 @@ payloads carry `schema_version = 1`. See [docs/mcp.md](docs/mcp.md) for schemas,
 error codes and pagination, [docs/valgrind.md](docs/valgrind.md) for the evidence
 format, [docs/diff.md](docs/diff.md) for run comparison,
 [docs/sanitizers.md](docs/sanitizers.md) for sanitizer runs,
-[docs/ctest.md](docs/ctest.md) for CTest integration, and
+[docs/ctest.md](docs/ctest.md) for CTest integration,
+[docs/core-and-attach.md](docs/core-and-attach.md) for cores/attach, and
 [docs/debugger.md](docs/debugger.md) for the GDB/LLDB backends.
 
 ## Repository layout
@@ -223,6 +225,7 @@ internal/diagnostic/          Canonical report, fingerprints and run comparison
 internal/valgrind/            Memcheck/Helgrind/DRD options, XML parser and service
 internal/sanitizer/           ASan/UBSan/LSan/TSan parser, reports and service
 internal/ctest/               Trusted CTest discovery, execution and JUnit reports
+internal/core/                Configured core-dump analysis with fixed GDB
 internal/analysis/            Analysis API, named errors, pagination and artifacts
 internal/dap/                 Generic DAP framing, client, state and capabilities
 internal/dap/daptest/         Scripted in-memory DAP adapter for tests
@@ -241,6 +244,7 @@ docs/valgrind.md              Memcheck pipeline, report schema and limits
 docs/diff.md                  Fingerprint pairing, compatibility and diff semantics
 docs/sanitizers.md            ASan/UBSan/LSan/TSan execution, parsing and limits
 docs/ctest.md                 CTest project discovery, selection and reports
+docs/core-and-attach.md       Core profiles and controlled attach
 docs/dap.md                   DAP framing, client lifecycle, state and limits
 docs/debugger.md              GDB/LLDB backends, debug API, lifecycle and limits
 docs/mcp.md                   MCP transport, tool discovery and payloads

@@ -21,7 +21,7 @@ Use GitHub's private vulnerability reporting on this repository
 You will receive an acknowledgement and a remediation plan. Please allow time for
 a fix before public disclosure.
 
-## Current surface (J10)
+## Current surface (J11)
 
 - `serve` starts an MCP server over stdin/stdout. stdout carries only JSON-RPC
   messages; logs and errors go to stderr.
@@ -52,6 +52,22 @@ a fix before public disclosure.
   launch CTest. `ctest_cancel` only signals a run owned by this server process.
   CTest JUnit output is untrusted, bounded XML; missing/unparsable evidence is
   `incomplete`.
+- `core_analyze` opens only a configured core/executable pair with fixed GDB
+  batch commands; no client path, expression, debugger command or shell flag is
+  accepted. Missing/mismatched/truncated core evidence is incomplete, never a
+  clean analysis.
+- `debug_attach` currently uses the verified GDB path only; LLDB attach is not
+  advertised. It requires `elevated-local`, `policy.attach=true` and the exact
+  PID in `policy.attach_allowed_pids`. Before launching the adapter it checks
+  same-UID ownership, dead/zombie/already-traced state, workspace-contained
+  executable and cwd, and Yama `ptrace_scope`; scope 1 requires a descendant
+  and a kernel-accepted adapter tracer (a target may need `PR_SET_PTRACER`),
+  scope 2/3 is refused. The PID identity is rechecked after the adapter starts,
+  but a tiny attach race remains after the kernel attaches; the process must
+  also have a workspace-confined executable. It never changes a sysctl or uses sudo. An
+  empty allowlist hides the tool. Attached sessions detach by default on
+  `debug_stop`; explicit `terminate=true` kills the target only with
+  `policy.attach_terminate=true`.
 - `analysis_status`, `analysis_report`, `analysis_artifact` and
   `diagnostics_diff` are read-only and never launch a program. `analysis_cancel`
   only signals a run that this server process owns or acknowledges that a
@@ -141,6 +157,11 @@ a fix before public disclosure.
   `supportTerminateDebuggee`, but no detach path was proven to preserve the
   inferior (the GDB test failed). `debug_stop(terminate=true)` never relies
   solely on that capability.
+- Core profiles are administrator trust declarations. The executable and core
+  must be owned by the server user and not group/world writable; their identity
+  is rechecked after GDB. Core reports expose the configured profile paths, a
+  bounded output and a raw `core-gdb.log` evidence reference; no arbitrary file
+  path is accepted.
 - CTest artifacts are logical types only (`junit`, `stdout`, `stderr`, `report`),
   opened through the artifact store with `O_NOFOLLOW` and bounded excerpts; no
   filesystem path is returned. CTest stdout/stderr and JUnit are untrusted.

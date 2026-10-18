@@ -172,6 +172,20 @@ released yet; milestones map to the development plan.
   `ctest.xml`, `stdout.log`, `stderr.log` and normalized `ctest.json`.
 - J10: `backend.ctest` fixed-option capability probe, MCP schemas/gating, real
   CMake/CTest fixture and real MCP workflow test; ADR 0013/`docs/ctest.md`.
+- J11: configured `cores[]` profiles and `core_analyze`, using fixed GDB batch
+  commands, bounded output, real GDB symbol/core loading and no client paths or
+  debugger commands.
+- J11: `debug_attach` with `policy.attach_allowed_pids`, same-UID ownership,
+  workspace containment, dead/already-traced checks, PID starttime/inode
+  revalidation, Yama `ptrace_scope` validation, no sysctl/sudo, and
+  detach-on-stop for attached sessions. Termination of an attached process
+  requires `policy.attach_terminate=true`.
+- J11: core raw GDB output is preserved as `core-gdb.log` with `core_artifact`
+  paging, core/executable ownership and identity checks, and degraded-marker
+  handling.
+- J11: real GDB attach/detach fixture, real gcore/GDB core fixture, attach
+  default-refusal tests, MCP schema/gating tests, ADR 0014 and
+  `docs/core-and-attach.md`.
 
 ### Changed
 
@@ -225,6 +239,10 @@ released yet; milestones map to the development plan.
 - J10: `ctest_discover` and `ctest_run` are hidden unless `backend.ctest` is
   available and a declared project directory contains `CTestTestfile.cmake`.
   CTest evidence tools remain available for persisted runs.
+- J11: `debug_attach` is hidden unless attach is explicitly enabled with a
+  non-empty PID allowlist and a debugger backend is available. Empty allowlists
+  deny by default. Attached sessions detach on `debug_stop` unless
+  `terminate=true`.
 
 ### Security
 
@@ -296,6 +314,9 @@ released yet; milestones map to the development plan.
   builds them. JUnit is untrusted, bounded XML and missing/unparsable evidence
   is incomplete. A passed selected-test report is not a claim about unselected
   or undiscovered tests.
+- J11: attach requires explicit PIDs and succeeds only under the current Yama
+  policy; the server never changes ptrace controls or uses sudo. Core analysis
+  reports incomplete on missing/mismatched/truncated evidence.
 - J9: sanitizer instrumentation is an explicit target declaration, not inferred
   from a filename; no client environment or sanitizer flags are accepted.
 

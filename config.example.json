@@ -24,7 +24,9 @@
   "policy": {
     "profile": "safe-default",
     "attach": false,
-    "evaluate": false
+    "evaluate": false,
+    "attach_allowed_pids": [],
+    "attach_terminate": false
   },
   "limits": {
     "timeout_seconds": 120,
@@ -41,5 +43,6 @@
   "ctest": {
     "projects": [],
     "test_timeout_seconds": 30
-  }
+  },
+  "cores": []
 }

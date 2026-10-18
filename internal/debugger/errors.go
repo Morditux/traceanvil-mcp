@@ -14,6 +14,7 @@ const (
 	CodeBackendUnavailable ErrorCode = "backend_unavailable"
 	CodeTargetUnknown      ErrorCode = "target_unknown"
 	CodePolicyDenied       ErrorCode = "policy_denied"
+	CodeAttachDenied       ErrorCode = "attach_denied"
 	CodeSourceDenied       ErrorCode = "source_denied"
 	CodeQuotaExceeded      ErrorCode = "quota_exceeded"
 	CodeSessionNotFound    ErrorCode = "session_not_found"

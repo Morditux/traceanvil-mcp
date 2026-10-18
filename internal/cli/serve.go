@@ -16,6 +16,7 @@ import (
 	"github.com/Morditux/traceanvil-mcp/internal/artifacts"
 	"github.com/Morditux/traceanvil-mcp/internal/capabilities"
 	"github.com/Morditux/traceanvil-mcp/internal/config"
+	"github.com/Morditux/traceanvil-mcp/internal/core"
 	"github.com/Morditux/traceanvil-mcp/internal/ctest"
 	"github.com/Morditux/traceanvil-mcp/internal/debugger"
 	"github.com/Morditux/traceanvil-mcp/internal/jobs"
@@ -155,6 +156,35 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		cleanups = append(cleanups, ctestService.Close)
 	}
 
+	var coreService *core.Service
+	if len(cfg.Cores) > 0 {
+		coreService, err = core.NewService(core.ServiceOptions{
+			Runner:   runner.New(),
+			Profiles: cfg.Cores,
+			Roots:    resolver.ResolvedRoots(),
+			Timeout:  time.Duration(cfg.Limits.TimeoutSeconds) * time.Second,
+			Store:    store,
+			Binary: func() (string, string, error) {
+				record, ok := registry.Get(capabilities.BackendGDB)
+				if !ok {
+					return "", "", errors.New("gdb capability is not registered")
+				}
+				if record.State != capabilities.StateAvailable || record.Path == "" {
+					reason := record.Reason
+					if reason == "" {
+						reason = "gdb is " + string(record.State)
+					}
+					return "", "", errors.New(reason)
+				}
+				return record.Path, record.Version, nil
+			},
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "mcp-native-diagnostics: %v\n", err)
+			return ExitFailure
+		}
+	}
+
 	maxReportBytes := store.MaxBytesPerRun()
 	if maxReportBytes > analysis.DefaultMaxReportBytes {
 		maxReportBytes = analysis.DefaultMaxReportBytes
@@ -234,6 +264,14 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 			}
 		}
 	}
+	if coreService != nil {
+		for _, definition := range mcpserver.CoreDefinitions(coreService, registry) {
+			if err := server.Register(definition); err != nil {
+				logger.Error("register core tool", "tool", definition.Name, "error", err)
+				return ExitFailure
+			}
+		}
+	}
 	server.SyncTools()
 
 	refreshCtx, stopRefresh := context.WithCancel(ctx)
@@ -287,9 +325,12 @@ func newDebuggerService(cfg *config.Config, resolver *policy.Resolver, registry 
 			debugger.BackendGDB:  debugBackendOptions(registry, capabilities.BackendGDB, cfg.Backends.GDB),
 			debugger.BackendLLDB: debugBackendOptions(registry, capabilities.BackendLLDB, cfg.Backends.LLDB),
 		},
-		Logger:           logger,
-		MaxSessions:      cfg.Limits.MaxSessions,
-		MaxResponseItems: cfg.Limits.MaxResponseItems,
+		Logger:            logger,
+		MaxSessions:       cfg.Limits.MaxSessions,
+		MaxResponseItems:  cfg.Limits.MaxResponseItems,
+		AttachEnabled:     cfg.Policy.Attach,
+		AttachAllowedPIDs: cfg.Policy.AttachAllowedPIDs,
+		AttachTerminate:   cfg.Policy.AttachTerminate,
 	})
 }
 

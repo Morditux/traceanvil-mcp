@@ -87,8 +87,9 @@ func New(cfg *config.Config, caps *capabilities.Registry, info version.Info, log
 				"policy and backend state. analysis_start runs one bounded Memcheck analysis of a " +
 				"declared target; analysis_status, analysis_report, analysis_artifact and " +
 				"diagnostics_diff expose status, bounded evidence and versioned run comparison. CTest tools discover and run exact allowlisted tests in trusted test directories, with per-test timeouts and reports. debug_start launches a declared target under GDB or " +
-				"LLDB over DAP; the other debug_* tools inspect a stopped session. No arbitrary " +
-				"attach, expression evaluation, memory read or debugger command is exposed. " +
+				"LLDB over DAP; debug_attach is available only for an explicitly allowlisted PID. " +
+				"core_analyze opens configured core profiles with fixed GDB commands. No arbitrary " +
+				"path, attach target, expression evaluation, memory read or debugger command is exposed. " +
 				"Backend-gated tools appear only while at least one debugger capability is available; " +
 				"never interpret incomplete evidence as a clean result.",
 			Capabilities: &mcp.ServerCapabilities{

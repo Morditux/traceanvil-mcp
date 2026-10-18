@@ -55,6 +55,8 @@ support dynamic lists must reconnect.
 | `analysis_report` | no | — | yes |
 | `analysis_artifact` | no | — | yes |
 | `diagnostics_diff` | no (compares two persisted reports) | — | yes |
+| `core_analyze` | no (opens a configured core with fixed GDB batch commands) | `backend.gdb` + configured core profile | yes |
+| `core_artifact` | no | — | yes |
 | `ctest_discover` | no (runs `ctest --show-only`, no test execution) | `backend.ctest` + usable project | yes |
 | `ctest_run` | **yes**, exact allowlisted CTest tests | `backend.ctest` + usable project | no |
 | `ctest_status` | no | — | yes |
@@ -62,6 +64,7 @@ support dynamic lists must reconnect.
 | `ctest_report` | no | — | yes |
 | `ctest_artifact` | no | — | yes |
 | `debug_start` | **yes**, an allowlisted target under GDB or LLDB | one debugger backend and a usable target | no |
+| `debug_attach` | **yes**, an explicitly allowlisted PID | `backend.gdb` + `attach=true` + PID allowlist + Yama checks | no |
 | `debug_status` | no | a debugger backend or a retained session | yes |
 | `debug_set_breakpoints` | no | at least one debugger backend | no |
 | `debug_continue` | no (resumes a process) | at least one debugger backend | no |
@@ -71,7 +74,7 @@ support dynamic lists must reconnect.
 | `debug_stack_trace` | no | at least one debugger backend | yes |
 | `debug_scopes` | no | at least one debugger backend | yes |
 | `debug_variables` | no | at least one debugger backend | yes |
-| `debug_stop` | no (terminates a session; detach is refused) | a debugger backend or a retained session | no |
+| `debug_stop` | no (terminates launched sessions; detaches attached sessions) | a debugger backend or a retained session | no |
 
 ## Shared conventions
 
@@ -485,7 +488,30 @@ disabled and a private `HOME`; its inferior uses a private PTY. Neither inferior
 shares the DAP pipe. Backend-specific ordering and id differences are documented
 in [debugger.md](debugger.md#backend-differences).
 
-### `debug_start`
+### `core_analyze`
+
+Accepts only `profile_id`. Opens the configured executable and core with fixed
+GDB batch commands (`info threads`, `thread apply all bt 32`) and returns a
+bounded thread list, raw GDB output, `complete` and an optional `evidence`
+reference. The full bounded GDB output is preserved in `core-gdb.log` and can be
+paged through `core_artifact`. No path, debugger command or shell fragment is
+accepted. A missing/mismatched core or truncated/uncertain
+output is incomplete, never a clean report. See
+[core-and-attach.md](core-and-attach.md).
+
+## `debug_attach`
+
+Accepts `pid`, optional `backend` (currently GDB only) and `stop_on_entry`. Requires
+`elevated-local`, `policy.attach=true` and the exact PID in
+`policy.attach_allowed_pids`. The server revalidates same-UID ownership,
+workspace-contained executable/cwd, not-already-traced state and Yama
+`ptrace_scope`; it never changes sysctls or uses sudo. With Yama scope 1 the
+target must be a descendant of the server. `debug_stop` detaches by default for
+attached sessions; `terminate=true` kills the target only when
+`policy.attach_terminate=true`. No attach tool is
+published with an empty allowlist.
+
+## `debug_start`
 
 **Input**
 
@@ -543,14 +569,14 @@ process event for lldb-dap). If that thread has exited, pass an explicit
 out leaves the reported state `running`, because a request already written to
 the adapter cannot be recalled.
 
-`debug_stop` terminates the debuggee by default (`terminate` omitted or `true`).
-J6/J7 do not implement detach: `terminate=false` returns
-`unsupported_capability` and leaves the session running, so call `debug_stop`
-with `terminate=true`. Both adapters advertise `supportTerminateDebuggee`, but
-real tests showed that releasing the debugger did not reliably preserve the
-inferior, so the server fails closed instead of claiming a detach. The call is
-idempotent: stopping an already terminated session returns
-`already_stopped=true` and its final status.
+`debug_stop` terminates launched debuggees by default (`terminate` omitted or
+`true`). For an attached session it detaches by default and leaves the target
+running; `terminate=true` explicitly kills the attached target. For launched
+sessions `terminate=false` returns `unsupported_capability` and leaves the
+session running, so call `debug_stop` with `terminate=true`. Both adapters
+advertise `supportTerminateDebuggee`; the launch path still fails closed rather
+than claiming an unproven detach. The call is idempotent: stopping an already
+terminal session returns `already_stopped=true` and its final status.
 
 ### State and references
 

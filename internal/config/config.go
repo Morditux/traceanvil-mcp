@@ -39,6 +39,8 @@ const (
 	MaxCTestProfiles        = 32
 	MaxCTestProfileTests    = 256
 	MaxCTestNameBytes       = 512
+	MaxCoreProfiles         = 32
+	MaxAttachPIDs           = 32
 )
 
 // Defaults applied when a limit is omitted (zero).
@@ -82,15 +84,23 @@ func ValidSanitizer(name string) bool {
 
 // Config is the root of the configuration document.
 type Config struct {
-	SchemaVersion  int      `json:"schema_version"`
-	WorkspaceRoots []string `json:"workspace_roots"`
-	ReportDir      string   `json:"report_dir"`
-	AllowedTargets []Target `json:"allowed_targets"`
-	Backends       Backends `json:"backends"`
-	Policy         Policy   `json:"policy"`
-	Limits         Limits   `json:"limits"`
-	Valgrind       Valgrind `json:"valgrind"`
-	CTest          CTest    `json:"ctest"`
+	SchemaVersion  int           `json:"schema_version"`
+	WorkspaceRoots []string      `json:"workspace_roots"`
+	ReportDir      string        `json:"report_dir"`
+	AllowedTargets []Target      `json:"allowed_targets"`
+	Backends       Backends      `json:"backends"`
+	Policy         Policy        `json:"policy"`
+	Limits         Limits        `json:"limits"`
+	Valgrind       Valgrind      `json:"valgrind"`
+	CTest          CTest         `json:"ctest"`
+	Cores          []CoreProfile `json:"cores,omitempty"`
+}
+
+// CoreProfile declares one trusted core dump and its matching executable.
+type CoreProfile struct {
+	ID         string `json:"id"`
+	Executable string `json:"executable"`
+	Core       string `json:"core"`
 }
 
 // CTest holds trusted CTest projects and per-test defaults.
@@ -142,6 +152,12 @@ type Policy struct {
 	Profile  string `json:"profile"`
 	Attach   bool   `json:"attach"`
 	Evaluate bool   `json:"evaluate"`
+	// AttachAllowedPIDs is the explicit process allowlist for debug_attach.
+	// Empty means all attach requests are refused.
+	AttachAllowedPIDs []int `json:"attach_allowed_pids,omitempty"`
+	// AttachTerminate permits debug_stop(terminate=true) to kill an attached
+	// process. Without it, attached sessions only detach.
+	AttachTerminate bool `json:"attach_terminate,omitempty"`
 }
 
 // Limits bounds execution and response sizes.
@@ -342,6 +358,12 @@ func (c *Config) Validate() error {
 	if err := c.validateCTest(roots); err != nil {
 		return err
 	}
+	if err := c.validateCores(roots); err != nil {
+		return err
+	}
+	if err := c.validateAttach(); err != nil {
+		return err
+	}
 	return c.validateLimits()
 }
 
@@ -462,6 +484,74 @@ func validateCTestName(field, name string) error {
 	}
 	if len(name) > MaxCTestNameBytes {
 		return fieldError(field, "must be at most %d bytes", MaxCTestNameBytes)
+	}
+	return nil
+}
+
+func (c *Config) validateCores(roots []string) error {
+	if len(c.Cores) > MaxCoreProfiles {
+		return fieldError("cores", "at most %d core profiles are allowed", MaxCoreProfiles)
+	}
+	seen := make(map[string]struct{}, len(c.Cores))
+	for i := range c.Cores {
+		profile := &c.Cores[i]
+		field := fmt.Sprintf("cores[%d]", i)
+		if !targetIDPattern.MatchString(profile.ID) {
+			return fieldError(field+".id", "must match %s", targetIDPattern)
+		}
+		if _, duplicate := seen[profile.ID]; duplicate {
+			return fieldError(field+".id", "duplicate core profile id %q", profile.ID)
+		}
+		seen[profile.ID] = struct{}{}
+		executable, err := normalizePath(field+".executable", profile.Executable)
+		if err != nil {
+			return err
+		}
+		if err := rejectSensitivePath(field+".executable", executable); err != nil {
+			return err
+		}
+		if !pathWithinAny(roots, executable) {
+			return fieldError(field+".executable", "must be inside workspace_roots")
+		}
+		corePath, err := normalizePath(field+".core", profile.Core)
+		if err != nil {
+			return err
+		}
+		if err := rejectSensitivePath(field+".core", corePath); err != nil {
+			return err
+		}
+		if !pathWithinAny(roots, corePath) {
+			return fieldError(field+".core", "must be inside workspace_roots")
+		}
+		profile.Executable = executable
+		profile.Core = corePath
+	}
+	return nil
+}
+
+func (c *Config) validateAttach() error {
+	if len(c.Policy.AttachAllowedPIDs) > MaxAttachPIDs {
+		return fieldError("policy.attach_allowed_pids", "at most %d PIDs are allowed", MaxAttachPIDs)
+	}
+	seen := make(map[int]struct{}, len(c.Policy.AttachAllowedPIDs))
+	for i, pid := range c.Policy.AttachAllowedPIDs {
+		field := fmt.Sprintf("policy.attach_allowed_pids[%d]", i)
+		if pid <= 1 {
+			return fieldError(field, "must be a process id greater than 1")
+		}
+		if _, duplicate := seen[pid]; duplicate {
+			return fieldError(field, "duplicate pid %d", pid)
+		}
+		seen[pid] = struct{}{}
+	}
+	if len(c.Policy.AttachAllowedPIDs) > 0 && (!c.Policy.Attach || c.Policy.Profile != ProfileElevatedLocal) {
+		return fieldError("policy.attach_allowed_pids",
+			"requires policy.attach=true and profile %q", ProfileElevatedLocal)
+	}
+	if c.Policy.AttachTerminate &&
+		(!c.Policy.Attach || c.Policy.Profile != ProfileElevatedLocal || len(c.Policy.AttachAllowedPIDs) == 0) {
+		return fieldError("policy.attach_terminate",
+			"requires attach=true, profile %q and a non-empty attach_allowed_pids", ProfileElevatedLocal)
 	}
 	return nil
 }

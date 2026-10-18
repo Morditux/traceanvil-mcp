@@ -27,17 +27,20 @@ const (
 )
 
 type sessionOptions struct {
-	ID          string
-	TargetID    string
-	Backend     string
-	Program     string
-	Dir         string
-	Binary      string
-	Version     string
-	Args        []string
-	StopOnEntry bool
-	Roots       []string
-	Logger      *slog.Logger
+	ID                   string
+	TargetID             string
+	Backend              string
+	Program              string
+	Dir                  string
+	Binary               string
+	Version              string
+	Args                 []string
+	StopOnEntry          bool
+	Attach               bool
+	PID                  int
+	AllowAttachTerminate bool
+	Roots                []string
+	Logger               *slog.Logger
 
 	RequestTimeout time.Duration
 	StartupTimeout time.Duration
@@ -47,14 +50,17 @@ type sessionOptions struct {
 // dapSession is one GDB or LLDB DAP session. The event loop is the only consumer
 // of the DAP event channel; status reads are independent and always available.
 type dapSession struct {
-	id             string
-	targetID       string
-	backend        backendSpec
-	backendVersion string
-	dir            string
-	stopOnEntry    bool
-	roots          []string
-	logger         *slog.Logger
+	id                   string
+	targetID             string
+	backend              backendSpec
+	backendVersion       string
+	attached             bool
+	attachPID            int
+	allowAttachTerminate bool
+	dir                  string
+	stopOnEntry          bool
+	roots                []string
+	logger               *slog.Logger
 
 	client *dap.Client
 	proc   *debugProcess
@@ -106,6 +112,9 @@ func startSession(ctx context.Context, opts sessionOptions) (Session, error) {
 	if !filepath.IsAbs(opts.Program) || !filepath.IsAbs(opts.Dir) || !filepath.IsAbs(opts.Binary) {
 		return nil, Errorf(CodeInternal, "program, working directory and debugger must be absolute")
 	}
+	if opts.Attach && opts.PID <= 1 {
+		return nil, Errorf(CodeInternal, "attach requires a positive pid")
+	}
 	if opts.RequestTimeout <= 0 {
 		opts.RequestTimeout = defaultRequestTimeout
 	}
@@ -155,24 +164,27 @@ func startSession(ctx context.Context, opts sessionOptions) (Session, error) {
 	}
 
 	session := &dapSession{
-		id:             opts.ID,
-		targetID:       opts.TargetID,
-		backend:        spec,
-		backendVersion: opts.Version,
-		dir:            opts.Dir,
-		stopOnEntry:    opts.StopOnEntry,
-		roots:          append([]string(nil), opts.Roots...),
-		logger:         opts.Logger,
-		client:         client,
-		proc:           proc,
-		home:           home,
-		requestTimeout: opts.RequestTimeout,
-		stopTimeout:    opts.StopTimeout,
-		state:          StateStarting,
-		startedAt:      time.Now().UTC(),
-		updatedAt:      time.Now().UTC(),
-		changed:        make(chan struct{}),
-		done:           make(chan struct{}),
+		id:                   opts.ID,
+		targetID:             opts.TargetID,
+		backend:              spec,
+		backendVersion:       opts.Version,
+		attached:             opts.Attach,
+		attachPID:            opts.PID,
+		allowAttachTerminate: opts.AllowAttachTerminate,
+		dir:                  opts.Dir,
+		stopOnEntry:          opts.StopOnEntry,
+		roots:                append([]string(nil), opts.Roots...),
+		logger:               opts.Logger,
+		client:               client,
+		proc:                 proc,
+		home:                 home,
+		requestTimeout:       opts.RequestTimeout,
+		stopTimeout:          opts.StopTimeout,
+		state:                StateStarting,
+		startedAt:            time.Now().UTC(),
+		updatedAt:            time.Now().UTC(),
+		changed:              make(chan struct{}),
+		done:                 make(chan struct{}),
 	}
 	go session.eventLoop()
 
@@ -214,17 +226,25 @@ func startSession(ctx context.Context, opts sessionOptions) (Session, error) {
 		return nil, session.bootFailure("begin launch", err)
 	}
 
-	launch := map[string]any{
+	command := "launch"
+	payload := map[string]any{
 		"program":     opts.Program,
 		"args":        append([]string{}, opts.Args...),
 		"cwd":         opts.Dir,
 		"stopOnEntry": opts.StopOnEntry,
 	}
-	// GDB does not answer launch until configurationDone has arrived; lldb-dap
-	// may answer launch before initialized. Write the launch frame first, then
-	// send configurationDone, then await the launch response. RequestAsync
-	// returns once the launch frame is written.
-	launchFuture, err := client.RequestAsync(startupCtx, "launch", launch)
+	if opts.Attach {
+		command = "attach"
+		payload = map[string]any{
+			"program":     opts.Program,
+			"pid":         opts.PID,
+			"stopOnEntry": opts.StopOnEntry,
+		}
+	}
+	// GDB does not answer launch/attach until configurationDone has arrived;
+	// lldb-dap may answer before initialized. Write the request frame first,
+	// then send configurationDone, then await the response.
+	launchFuture, err := client.RequestAsync(startupCtx, command, payload)
 	if err != nil {
 		return nil, session.bootFailure("send launch", err)
 	}
@@ -257,7 +277,7 @@ func startSession(ctx context.Context, opts sessionOptions) (Session, error) {
 		return nil, session.bootFailure("launch debuggee", err)
 	}
 
-	if opts.StopOnEntry {
+	if opts.StopOnEntry && !opts.Attach {
 		stopCtx, stopCancel := context.WithTimeout(startupCtx, stopEntryTimeout)
 		err := session.waitFor(stopCtx, func() bool {
 			return session.state == StateStopped || session.state.Terminal()
@@ -370,7 +390,7 @@ func (s *dapSession) bootFailure(action string, cause error) error {
 	s.closing = true
 	s.notifyLocked()
 	s.mu.Unlock()
-	s.releaseResources(true)
+	s.releaseResources(!s.attached)
 
 	code := CodeStartFailed
 	if errors.Is(cause, context.DeadlineExceeded) {
@@ -406,6 +426,7 @@ func (s *dapSession) Status() Status {
 		Backend:        s.backend.Name,
 		BackendVersion: s.backendVersion,
 		TargetID:       s.targetID,
+		Attached:       s.attached,
 		State:          s.state,
 		StopGeneration: s.stopGen,
 		LastEvent:      s.lastEvent,
@@ -574,14 +595,14 @@ func (s *dapSession) onClientClosed() {
 		s.notifyLocked()
 	}
 	s.mu.Unlock()
-	s.releaseResources(true)
+	s.releaseResources(!s.attached)
 }
 
 func (s *dapSession) scheduleRelease() {
 	go func() {
 		select {
 		case <-time.After(500 * time.Millisecond):
-			s.releaseResources(true)
+			s.releaseResources(!s.attached)
 		case <-s.done:
 		}
 	}()
@@ -591,13 +612,13 @@ func (s *dapSession) scheduleRelease() {
 // releaseResources also calls it best-effort before closing a session that did
 // not take the normal Stop path. The first result is cached so a failed
 // best-effort attempt does not produce duplicate requests.
-func (s *dapSession) disconnect(ctx context.Context) error {
+func (s *dapSession) disconnect(ctx context.Context, terminate bool) error {
 	s.disconnectOnce.Do(func() {
 		if s.client == nil {
 			return
 		}
 		_, s.disconnectErr = s.client.Request(ctx, "disconnect", map[string]any{
-			"terminateDebuggee": true,
+			"terminateDebuggee": terminate,
 		})
 	})
 	return s.disconnectErr
@@ -617,7 +638,7 @@ func (s *dapSession) releaseResources(terminate bool) {
 			// adapter to terminate the inferior before closing its transport;
 			// the group kill below may not reach an inferior in another group.
 			disconnectCtx, cancel := context.WithTimeout(context.Background(), teardownDisconnectTimeout)
-			_ = s.disconnect(disconnectCtx)
+			_ = s.disconnect(disconnectCtx, terminate)
 			cancel()
 		}
 		if s.client != nil {
@@ -639,21 +660,35 @@ func (s *dapSession) releaseResources(terminate bool) {
 	})
 }
 
-// Close terminates the debuggee and releases the session. It is idempotent and
-// used by manager shutdown and retention.
+// Close releases the session. Launched debuggees are terminated; attached
+// debuggees are detached so server shutdown/retention does not kill a process
+// the administrator merely asked to inspect. It is idempotent.
 func (s *dapSession) Close() {
 	s.stopMu.Lock()
 	defer s.stopMu.Unlock()
 	s.closeOnce.Do(func() {
 		s.mu.Lock()
+		attached := s.attached
 		if !s.state.Terminal() {
-			s.state = StateFailed
-			s.errText = "debug session closed by the server"
+			if attached {
+				s.state = StateDetached
+				s.errText = ""
+			} else {
+				s.state = StateFailed
+				s.errText = "debug session closed by the server"
+			}
 		}
 		s.updatedAt = time.Now().UTC()
 		s.closing = true
 		s.notifyLocked()
 		s.mu.Unlock()
+		if attached {
+			disconnectCtx, cancel := context.WithTimeout(context.Background(), teardownDisconnectTimeout)
+			_ = s.disconnect(disconnectCtx, false)
+			cancel()
+			s.releaseResources(false)
+			return
+		}
 		s.releaseResources(true)
 	})
 }
@@ -1327,9 +1362,13 @@ func (s *dapSession) Stop(ctx context.Context, req StopRequest) (StopResult, err
 	s.stopMu.Lock()
 	defer s.stopMu.Unlock()
 
-	terminate := true
+	terminate := !s.attached
 	if req.Terminate != nil {
 		terminate = *req.Terminate
+	}
+	if terminate && s.attached && !s.allowAttachTerminate {
+		return StopResult{}, Errorf(CodeUnsupported,
+			"terminating an attached process requires policy.attach_terminate=true")
 	}
 
 	s.mu.Lock()
@@ -1338,7 +1377,7 @@ func (s *dapSession) Stop(ctx context.Context, req StopRequest) (StopResult, err
 	s.mu.Unlock()
 
 	if already {
-		s.releaseResources(true)
+		s.releaseResources(!s.attached)
 		return StopResult{
 			SchemaVersion:  APISchemaVersion,
 			SessionID:      s.id,
@@ -1350,12 +1389,37 @@ func (s *dapSession) Stop(ctx context.Context, req StopRequest) (StopResult, err
 	}
 
 	if !terminate {
-		// Both adapters advertise supportTerminateDebuggee, but no detach path
-		// has been proven to preserve the inferior (the GDB J6 test failed).
-		// Refusing is safer than reporting a detach that did not preserve the
-		// debuggee. Callers can always terminate the session.
-		return StopResult{}, Errorf(CodeUnsupported,
-			"detach is not implemented; call debug_stop with terminate=true")
+		if !s.attached {
+			// Launched inferiors still have no proven detach path; only an
+			// attached process can be released without inventing a termination.
+			return StopResult{}, Errorf(CodeUnsupported,
+				"detach is not implemented for launched sessions; call debug_stop with terminate=true")
+		}
+		stopCtx := context.Background()
+		if ctx != nil && ctx.Err() == nil {
+			stopCtx = ctx
+		}
+		disconnectCtx, cancel := context.WithTimeout(stopCtx, s.stopTimeout)
+		defer cancel()
+		disconnectErr := s.disconnect(disconnectCtx, false)
+		s.mu.Lock()
+		s.state = StateDetached
+		s.stop = nil
+		s.errText = ""
+		s.updatedAt = time.Now().UTC()
+		s.notifyLocked()
+		s.mu.Unlock()
+		s.releaseResources(false)
+		result := StopResult{
+			SchemaVersion: APISchemaVersion, SessionID: s.id,
+			Terminated: false, Detached: true, AlreadyStopped: false,
+		}
+		if disconnectErr != nil {
+			result.Warnings = append(result.Warnings,
+				"attach disconnect request failed ("+truncateText(disconnectErr.Error(), 256)+")")
+		}
+		result.Status = s.Status()
+		return result, nil
 	}
 
 	stopCtx := context.Background()
@@ -1364,7 +1428,7 @@ func (s *dapSession) Stop(ctx context.Context, req StopRequest) (StopResult, err
 	}
 	disconnectCtx, cancel := context.WithTimeout(stopCtx, s.stopTimeout)
 	defer cancel()
-	disconnectErr := s.disconnect(disconnectCtx)
+	disconnectErr := s.disconnect(disconnectCtx, true)
 
 	s.mu.Lock()
 	s.state = StateTerminated
@@ -1393,6 +1457,15 @@ func (s *dapSession) Stop(ctx context.Context, req StopRequest) (StopResult, err
 		s.mu.Unlock()
 		result.Terminated = false
 		result.Warnings = append(result.Warnings, "the debuggee process did not terminate after SIGKILL")
+	}
+	if s.attached && attachedProcessAlive(s.attachPID) {
+		s.mu.Lock()
+		s.state = StateFailed
+		s.errText = "attached process survived terminate"
+		s.updatedAt = time.Now().UTC()
+		s.mu.Unlock()
+		result.Terminated = false
+		result.Warnings = append(result.Warnings, "the attached process survived terminate")
 	}
 	if disconnectErr != nil {
 		result.Warnings = append(result.Warnings,

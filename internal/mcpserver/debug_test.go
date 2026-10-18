@@ -15,13 +15,15 @@ import (
 )
 
 type fakeDebugService struct {
-	mu        sync.Mutex
-	sessions  bool
-	targets   bool
-	startErr  error
-	status    debugger.Status
-	lastStart debugger.StartRequest
-	lastStop  debugger.StopRequest
+	mu              sync.Mutex
+	sessions        bool
+	targets         bool
+	startErr        error
+	status          debugger.Status
+	attachAvailable bool
+	lastStart       debugger.StartRequest
+	lastAttach      debugger.AttachRequest
+	lastStop        debugger.StopRequest
 }
 
 func (f *fakeDebugService) Start(_ context.Context, req debugger.StartRequest) (debugger.Status, error) {
@@ -33,6 +35,19 @@ func (f *fakeDebugService) Start(_ context.Context, req debugger.StartRequest) (
 	}
 	return f.status, nil
 }
+
+func (f *fakeDebugService) Attach(_ context.Context, req debugger.AttachRequest) (debugger.Status, error) {
+	if f.startErr != nil {
+		return debugger.Status{}, f.startErr
+	}
+	status := f.status
+	status.SessionID = "dbg_0123456789abcdef0123456789abcdef"
+	status.Attached = true
+	f.lastAttach = req
+	return status, nil
+}
+
+func (f *fakeDebugService) AttachAvailable() bool { return f.attachAvailable }
 
 func (f *fakeDebugService) Status(context.Context, debugger.StatusRequest) (debugger.Status, error) {
 	return f.status, nil
@@ -130,11 +145,15 @@ func TestDebugToolPublicationFollowsCapabilityAndSessions(t *testing.T) {
 	server, service, registry, session, ctx := newDebugServer(t)
 	names := listToolNames(t, session, ctx)
 	for _, want := range DebugToolNames() {
+		if want == "debug_attach" {
+			continue
+		}
 		if !contains(names, want) {
 			t.Errorf("tools = %v, missing %q", names, want)
 		}
 	}
-	if contains(names, "debug_evaluate") || contains(names, "debug_attach") || contains(names, "debug_execute_command") {
+	if contains(names, "debug_evaluate") || contains(names, "debug_execute_command") ||
+		contains(names, "debug_attach") {
 		t.Errorf("tools = %v contain a forbidden debug tool", names)
 	}
 
@@ -183,6 +202,9 @@ func TestDebugToolPublicationFollowsCapabilityAndSessions(t *testing.T) {
 	}
 
 	availableGDB(t, registry)
+	service.mu.Lock()
+	service.attachAvailable = true
+	service.mu.Unlock()
 	server.SyncTools()
 	names = listToolNames(t, session, ctx)
 	for _, want := range DebugToolNames() {
@@ -403,6 +425,9 @@ func TestDebugToolsPublishForLLDBOnly(t *testing.T) {
 	session, ctx := connect(t, server, nil)
 	names := listToolNames(t, session, ctx)
 	for _, want := range DebugToolNames() {
+		if want == "debug_attach" {
+			continue // attach is gated on GDB, not just any debugger backend
+		}
 		if !contains(names, want) {
 			t.Errorf("tools = %v, missing %q with LLDB available", names, want)
 		}
@@ -426,6 +451,79 @@ func TestDebugToolsPublishForLLDBOnly(t *testing.T) {
 				status.RequiredCapabilities[1] != capabilities.BackendLLDB {
 				t.Errorf("debug_start required_capabilities = %v", status.RequiredCapabilities)
 			}
+		}
+	}
+}
+
+func TestDebugAttachToolRequiresAvailability(t *testing.T) {
+	server, service, registry, session, ctx := newDebugServer(t)
+	names := listToolNames(t, session, ctx)
+	if contains(names, "debug_attach") {
+		t.Fatal("debug_attach is published without an allowlist")
+	}
+	service.mu.Lock()
+	service.attachAvailable = true
+	service.mu.Unlock()
+	availableGDB(t, registry)
+	server.SyncTools()
+	names = listToolNames(t, session, ctx)
+	if !contains(names, "debug_attach") {
+		t.Fatalf("tools = %v, missing debug_attach", names)
+	}
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "debug_attach", Arguments: map[string]any{"pid": 1234},
+	})
+	if err != nil || result.IsError {
+		t.Fatalf("debug_attach = %+v, %v", result, err)
+	}
+	service.mu.Lock()
+	attached := service.lastAttach
+	service.mu.Unlock()
+	if attached.PID != 1234 {
+		t.Errorf("attach request = %+v", attached)
+	}
+}
+
+func TestDebugAttachSchema(t *testing.T) {
+	registry := capabilities.NewRegistry(nil, time.Second)
+	availableGDB(t, registry)
+	service := &fakeDebugService{
+		targets:         true,
+		attachAvailable: true,
+		status:          debugger.Status{SchemaVersion: debugger.APISchemaVersion, SessionID: "dbg_0123456789abcdef0123456789abcdef", Attached: true},
+	}
+	server := New(testConfig(), registry, version.Current(), nil)
+	for _, definition := range DebugDefinitions(service, registry) {
+		if err := server.Register(definition); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server.SyncTools()
+	session, ctx := connect(t, server, nil)
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found *mcp.Tool
+	for _, tool := range tools.Tools {
+		if tool.Name == "debug_attach" {
+			found = tool
+		}
+	}
+	if found == nil {
+		t.Fatal("debug_attach is not published")
+	}
+	schema, ok := found.InputSchema.(map[string]any)
+	if !ok {
+		t.Fatalf("schema = %T", found.InputSchema)
+	}
+	properties, ok := schema["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties = %T", schema["properties"])
+	}
+	for _, field := range []string{"pid", "backend", "stop_on_entry"} {
+		if _, ok := properties[field]; !ok {
+			t.Errorf("debug_attach schema missing %q", field)
 		}
 	}
 }

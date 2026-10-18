@@ -27,6 +27,7 @@ never modifies the machine.
 | `limits` | object | no | Missing limits are replaced by defaults. |
 | `valgrind` | object | no | Optional suppression profiles for Memcheck. |
 | `ctest` | object | no | Trusted CTest projects and per-test timeout. |
+| `cores` | array of objects | no | Trusted core+executable profiles. |
 
 ### Path rules
 
@@ -122,9 +123,11 @@ as resolved. See [valgrind.md](valgrind.md#suppressions).
 | `profile` | string | `safe-default` | `safe-default`, `trusted-local` or `elevated-local`. |
 | `attach` | boolean | `false` | Requires `elevated-local`. |
 | `evaluate` | boolean | `false` | Requires `elevated-local`. |
+| `attach_allowed_pids` | array of integers | empty | Requires `attach=true` and `elevated-local`; explicit, unique PIDs > 1. |
+| `attach_terminate` | boolean | `false` | Allows `debug_stop(terminate=true)` to kill an attached PID; requires attach and a non-empty PID allowlist. |
 
-`elevated-local` is accepted by validation but its features are **not
-implemented** yet; `doctor` warns about it. `attach` and `evaluate` are never
+`elevated-local` is accepted by validation. `attach` is implemented only
+through the explicit PID allowlist; `evaluate` remains unsupported and is never
 exposed by the default profile.
 
 ### `limits`
@@ -250,3 +253,41 @@ never turns missing or unparsable evidence into a passed run.
 available and at least one declared project has a usable test directory. The
 other CTest tools (`ctest_status`, `ctest_cancel`, `ctest_report`,
 `ctest_artifact`) stay published for persisted runs.
+
+### `cores`
+
+```json
+{
+  "cores": [
+    {
+      "id": "crash",
+      "executable": "/home/user/work/native-project/build/fixture",
+      "core": "/home/user/work/native-project/build/core.1234"
+    }
+  ]
+}
+```
+
+Core profiles bind one reviewed executable to one core file. Both paths are
+absolute, must be inside `workspace_roots` and are revalidated at invocation.
+`core_analyze` accepts only the profile id; it never accepts a core/executable
+path or a debugger command. The tool uses fixed GDB batch flags and commands,
+with a bounded timeout and response. It is published only while `backend.gdb`
+is available and at least one profile is declared.
+
+### `policy.attach_allowed_pids`
+
+`debug_attach` is refused by default. To enable it, use `elevated-local` with
+`policy.attach=true` and an explicit `attach_allowed_pids` list (at most 32
+unique PIDs greater than 1). The process must also:
+
+- share the server's real/effective/saved UID;
+- have a workspace-contained executable and working directory;
+- not already be traced or dead;
+- satisfy the current Yama `ptrace_scope` (scope 1 requires it to be a
+  descendant of the server; scope 2/3 is refused).
+
+The server never changes a sysctl or uses sudo. Attached sessions detach on
+`debug_stop` by default. `terminate=true` kills the target only when
+`policy.attach_terminate=true`; otherwise the request is refused. PIDs are
+explicit and ephemeral, not process-name patterns.

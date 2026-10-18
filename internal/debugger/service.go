@@ -38,22 +38,31 @@ type ServiceOptions struct {
 	StartupTimeout   time.Duration
 	StopTimeout      time.Duration
 
+	// AttachEnabled is the administrator's attach permission. It is only
+	// effective with a non-empty AttachAllowedPIDs list.
+	AttachEnabled     bool
+	AttachAllowedPIDs []int
+	AttachTerminate   bool
+
 	// Starter is injectable for tests. Production uses startSession.
 	Starter func(context.Context, sessionOptions) (Session, error)
 }
 
 // Service is the debugger business API. MCP handlers only delegate here.
 type Service struct {
-	resolver       *policy.Resolver
-	roots          []string
-	backends       map[string]BackendOptions
-	logger         *slog.Logger
-	manager        *Manager
-	maxItems       int
-	requestTimeout time.Duration
-	startupTimeout time.Duration
-	stopTimeout    time.Duration
-	starter        func(context.Context, sessionOptions) (Session, error)
+	resolver        *policy.Resolver
+	roots           []string
+	backends        map[string]BackendOptions
+	logger          *slog.Logger
+	manager         *Manager
+	maxItems        int
+	requestTimeout  time.Duration
+	startupTimeout  time.Duration
+	stopTimeout     time.Duration
+	starter         func(context.Context, sessionOptions) (Session, error)
+	attachEnabled   bool
+	attachAllowed   map[int]struct{}
+	attachTerminate bool
 }
 
 const (
@@ -107,17 +116,24 @@ func NewService(opts ServiceOptions) (*Service, error) {
 	for name, backend := range opts.Backends {
 		backends[name] = backend
 	}
+	attachAllowed := make(map[int]struct{}, len(opts.AttachAllowedPIDs))
+	for _, pid := range opts.AttachAllowedPIDs {
+		attachAllowed[pid] = struct{}{}
+	}
 	return &Service{
-		resolver:       opts.Resolver,
-		roots:          append([]string(nil), opts.Roots...),
-		backends:       backends,
-		logger:         logger,
-		manager:        manager,
-		maxItems:       opts.MaxResponseItems,
-		requestTimeout: opts.RequestTimeout,
-		startupTimeout: opts.StartupTimeout,
-		stopTimeout:    opts.StopTimeout,
-		starter:        starter,
+		resolver:        opts.Resolver,
+		roots:           append([]string(nil), opts.Roots...),
+		backends:        backends,
+		logger:          logger,
+		manager:         manager,
+		maxItems:        opts.MaxResponseItems,
+		requestTimeout:  opts.RequestTimeout,
+		startupTimeout:  opts.StartupTimeout,
+		stopTimeout:     opts.StopTimeout,
+		starter:         starter,
+		attachEnabled:   opts.AttachEnabled,
+		attachAllowed:   attachAllowed,
+		attachTerminate: opts.AttachTerminate,
 	}, nil
 }
 
