@@ -183,14 +183,14 @@ func validateWireMessage(message wireMessage) error {
 	return nil
 }
 
-// writeFrame writes one Content-Length frame. The caller serializes writers and
-// enforces the payload limit; this function only frames bytes.
 // protocolWrap annotates an underlying failure while preserving both the
 // protocol sentinel and the cause through errors.Is.
 func protocolWrap(reason string, sentinel, cause error) *ProtocolError {
 	return &ProtocolError{Reason: reason, Err: errors.Join(sentinel, cause)}
 }
 
+// writeFrame writes one Content-Length frame. The caller serializes writers and
+// enforces the payload limit; this function only frames bytes.
 func writeFrame(writer io.Writer, payload []byte) error {
 	if writer == nil {
 		return protocolError("nil writer", ErrMalformedFrame)

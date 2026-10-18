@@ -189,8 +189,8 @@ func (c *Client) Initialize(ctx context.Context, args InitializeRequestArguments
 	c.capsRaw = raw
 	c.capsMu.Unlock()
 
-	copy := capabilities
-	return &copy, nil
+	result := capabilities
+	return &result, nil
 }
 
 // Capabilities returns the last negotiated capabilities (a value copy).
