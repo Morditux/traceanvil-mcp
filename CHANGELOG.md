@@ -5,6 +5,13 @@ the release process produces checksummed, SBOM-accompanied binaries.
 
 ## Unreleased
 
+### Fixed
+
+- CI: fake GDB/LLDB capability adapters now read the initialize request before
+  responding and wait for client shutdown instead of sleeping for 100 ms.
+  This removes the unsolicited-response race seen in `TestDAPProbeAvailable`
+  under `go test -race`; premature EOF remains explicitly rejected.
+
 ### Added
 
 - J14: Ubuntu 22.04/24.04 CI matrix over Go 1.25.x and stable, plus a bounded

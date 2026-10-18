@@ -13,6 +13,20 @@ import (
 	"github.com/Morditux/traceanvil-mcp/internal/config"
 )
 
+// readDAPInitializeRequest makes the fake adapter wait for the complete client
+// request before responding. Sending a canned response immediately can race
+// request registration under the race detector. After responding, fixtures
+// drain stdin until the client closes it instead of guessing a sleep duration.
+const readDAPInitializeRequest = `
+carriage_return="$(printf '\r')"
+IFS=' ' read -r header length || exit 1
+[ "$header" = "Content-Length:" ] || exit 1
+length="${length%"$carriage_return"}"
+IFS= read -r blank || exit 1
+[ "$blank" = "$carriage_return" ] || exit 1
+dd bs=1 count="$length" of=/dev/null 2>/dev/null || exit 1
+`
+
 func TestDAPProbeAvailable(t *testing.T) {
 	dir := t.TempDir()
 	writeExecutable(t, dir, "gdb", `#!/bin/sh
@@ -20,9 +34,9 @@ if [ "$1" = "--version" ]; then
   echo "fake gdb 1.0"
   exit 0
 fi
-body='{"seq":1,"type":"response","request_seq":1,"command":"initialize","success":true,"body":{"supportsConfigurationDoneRequest":true}}'
+`+readDAPInitializeRequest+`body='{"seq":1,"type":"response","request_seq":1,"command":"initialize","success":true,"body":{"supportsConfigurationDoneRequest":true}}'
 printf 'Content-Length: %d\r\n\r\n%s' "${#body}" "$body"
-sleep 0.1
+cat >/dev/null
 `)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -68,6 +82,27 @@ exit 1
 	}
 	if !strings.Contains(record.Probe.Detail, "unrecognized") {
 		t.Errorf("Detail = %q, want the adapter stderr", record.Probe.Detail)
+	}
+}
+
+func TestDAPProbeEOFBeforeInitialize(t *testing.T) {
+	dir := t.TempDir()
+	writeExecutable(t, dir, "gdb", `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "fake gdb 1.0"
+  exit 0
+fi
+`+readDAPInitializeRequest+`exit 0
+`)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	registry := NewRegistry([]Probe{NewGDBProbe(true)}, time.Second)
+	record := registry.Refresh(context.Background())[0]
+	if record.State != StateUnsupported {
+		t.Fatalf("State = %q, want unsupported (reason: %s)", record.State, record.Reason)
+	}
+	if !strings.Contains(record.Reason, "before completing") {
+		t.Errorf("Reason = %q, want an incomplete handshake", record.Reason)
 	}
 }
 
@@ -166,10 +201,10 @@ if [ "$1" = "--version" ]; then
   echo "fake gdb 1.0"
   exit 0
 fi
-body='{"seq":1,"type":"response","request_seq":1,"command":"initialize","success":true,"body":{"supportsConfigurationDoneRequest":true}}'
+`+readDAPInitializeRequest+`body='{"seq":1,"type":"response","request_seq":1,"command":"initialize","success":true,"body":{"supportsConfigurationDoneRequest":true}}'
 printf 'Content-Length: %d\r\n\r\n%s' "${#body}" "$body"
 echo "Undefined set command: debuginfod enabled" >&2
-sleep 0.1
+cat >/dev/null
 `)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -191,9 +226,9 @@ if [ "$1" = "--version" ]; then
   echo "lldb-dap 21.1.8"
   exit 0
 fi
-body='{"seq":0,"type":"response","request_seq":1,"command":"initialize","success":true,"body":{"supportsConfigurationDoneRequest":true}}'
+`+readDAPInitializeRequest+`body='{"seq":0,"type":"response","request_seq":1,"command":"initialize","success":true,"body":{"supportsConfigurationDoneRequest":true}}'
 printf 'Content-Length: %d\r\n\r\n%s' "${#body}" "$body"
-/bin/sleep 0.1
+cat >/dev/null
 `)
 	t.Setenv("PATH", dir)
 
@@ -237,9 +272,9 @@ if [ "$1" = "--version" ]; then
   /bin/sleep 3
   exit 0
 fi
-body='{"seq":0,"type":"response","request_seq":1,"command":"initialize","success":true,"body":{"supportsConfigurationDoneRequest":true}}'
+`+readDAPInitializeRequest+`body='{"seq":0,"type":"response","request_seq":1,"command":"initialize","success":true,"body":{"supportsConfigurationDoneRequest":true}}'
 printf 'Content-Length: %d\r\n\r\n%s' "${#body}" "$body"
-/bin/sleep 0.1
+cat >/dev/null
 `)
 	t.Setenv("PATH", dir)
 
@@ -299,9 +334,9 @@ if [ "$1" = "--version" ]; then
   echo "lldb-dap 21.1.8"
   exit 0
 fi
-body='{"seq":0,"type":"response","request_seq":1,"command":"initialize","success":true,"body":{"supportsConfigurationDoneRequest":true}}'
+`+readDAPInitializeRequest+`body='{"seq":0,"type":"response","request_seq":1,"command":"initialize","success":true,"body":{"supportsConfigurationDoneRequest":true}}'
 printf 'Content-Length: %d\r\n\r\n%s' "${#body}" "$body"
-/bin/sleep 0.1
+cat >/dev/null
 `)
 	t.Setenv("PATH", dir)
 
