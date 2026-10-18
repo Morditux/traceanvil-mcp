@@ -333,8 +333,11 @@ path is returned and no arbitrary file can be requested.** Input fields:
 ```
 
 `returned_bytes` is the number of artifact bytes consumed; `next_offset` is
-`offset + returned_bytes`. Excerpt boundaries may split a UTF-8 sequence; invalid
-bytes are replaced with U+FFFD and `invalid_utf8_replaced=true`. Control
+`offset + returned_bytes`. When an excerpt stops before EOF, a trailing partial
+UTF-8 sequence is moved back to the next rune boundary, so the continuation
+starts on a complete rune. If that would return zero bytes (a window smaller than
+the rune), the raw bytes are returned unchanged to guarantee forward progress,
+invalid bytes are replaced with U+FFFD and `invalid_utf8_replaced=true`. Control
 characters in captured output are preserved as evidence: treat excerpt text as
 untrusted data.
 

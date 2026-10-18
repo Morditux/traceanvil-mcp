@@ -627,11 +627,12 @@ func (s *Service) buildReportPage(req ReportRequest, header reportHeader, diagno
 		page.Warnings = append(page.Warnings, "the report scan is incomplete; do not interpret this page as exhaustive")
 	}
 	return page, nil
-
 }
 
 // Artifact returns a bounded UTF-8 excerpt of one allowlisted artifact. It never
-// exposes a filesystem path.
+// exposes a filesystem path. When the excerpt stops before EOF, a trailing
+// partial UTF-8 rune is moved back to the next rune boundary unless that would
+// return zero bytes; the continuation cursor then starts on that boundary.
 func (s *Service) Artifact(ctx context.Context, req ArtifactRequest) (ArtifactOutput, error) {
 	if ctx == nil {
 		return ArtifactOutput{}, Errorf(CodeInternal, "nil context")
@@ -684,6 +685,9 @@ func (s *Service) Artifact(ctx context.Context, req ArtifactRequest) (ArtifactOu
 		return ArtifactOutput{}, contextError(err)
 	}
 
+	if req.Offset+int64(len(data)) < info.Size() {
+		data = trimIncompleteRune(data)
+	}
 	content := string(data)
 	invalid := !utf8.Valid(data)
 	if invalid {
@@ -1123,4 +1127,21 @@ func combineErrors(values ...string) string {
 		parts = append(parts, limitUTF8(value, maxWarningBytes))
 	}
 	return strings.Join(parts, "; ")
+}
+
+// trimIncompleteRune drops a trailing partial UTF-8 sequence produced by a
+// byte-bounded excerpt, so the next excerpt starts on a rune boundary instead
+// of both pages containing replacement characters. Data without a complete
+// rune is returned unchanged to guarantee forward progress.
+func trimIncompleteRune(data []byte) []byte {
+	for i := 1; i <= utf8.UTFMax-1 && i <= len(data); i++ {
+		if !utf8.RuneStart(data[len(data)-i]) {
+			continue
+		}
+		if !utf8.FullRune(data[len(data)-i:]) && len(data)-i > 0 {
+			return data[:len(data)-i]
+		}
+		break
+	}
+	return data
 }

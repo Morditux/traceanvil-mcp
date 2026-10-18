@@ -60,7 +60,9 @@ released yet; milestones map to the development plan.
   item and byte budgets, explicit oversize/unreadable accounting and no silent
   omissions.
 - J4: bounded artifact excerpts for raw XML, normalized report, stdout, stderr
-  and job manifest; logical artifact types only, no paths.
+  and job manifest; logical artifact types only, no paths. Excerpt boundaries
+  back off to complete UTF-8 runes when possible and always make progress on
+  windows smaller than one rune.
 - J4: per-request `timeout_ms` that can only shorten the configured maximum, and
   service wiring for `report_dir`, `max_report_bytes`, `timeout_seconds`,
   `max_jobs` and `max_response_items`.

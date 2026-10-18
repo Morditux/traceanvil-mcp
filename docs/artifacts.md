@@ -39,8 +39,10 @@ The run id must match `^run_[0-9a-f]{32}$` and name an existing run directory of
 the configured store. The directory is rejected if it is a symbolic link; the
 file is opened with `O_NOFOLLOW|O_NONBLOCK`, must be a regular file, and the file
 name is chosen from the allowlist. Excerpts default to 64 KiB, are hard-capped at
-1 MiB, and continue with `next_offset`. Invalid UTF-8 is replaced with U+FFFD.
-Absolute filesystem paths are never returned. See
+1 MiB, and continue with `next_offset`. When an excerpt stops before EOF, a
+trailing partial UTF-8 sequence is moved back to the next rune boundary unless
+that would return zero bytes; otherwise invalid bytes are replaced with U+FFFD
+and flagged. Absolute filesystem paths are never returned. See
 [mcp.md](mcp.md#analysis_artifact).
 
 The normalized report format and its invariants are documented in

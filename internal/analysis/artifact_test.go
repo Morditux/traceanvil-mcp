@@ -224,3 +224,107 @@ func TestArtifactReplacesInvalidUTF8(t *testing.T) {
 		t.Errorf("content = %q", output.Content)
 	}
 }
+
+func TestArtifactExcerptKeepsRuneBoundaries(t *testing.T) {
+	store := newTestStore(t)
+	runID := writeArtifact(t, store, "stdout.log", []byte("x€y"))
+	service := newTestService(t, store, newFakeBackend(), nil)
+	ctx := context.Background()
+
+	var content []byte
+	offset := int64(0)
+	maxBytes := 3
+	for pages := 0; ; pages++ {
+		output, err := service.Artifact(ctx, ArtifactRequest{
+			RunID:        runID,
+			ArtifactType: ArtifactStdout,
+			Offset:       offset,
+			MaxBytes:     maxBytes,
+		})
+		if err != nil {
+			t.Fatalf("Artifact() page %d error = %v", pages, err)
+		}
+		if output.InvalidUTF8Replaced {
+			t.Errorf("page %d replaced valid UTF-8: %q", pages, output.Content)
+		}
+		content = append(content, output.Content...)
+		if !output.HasMore {
+			if output.NextOffset != int64(len("x€y")) {
+				t.Errorf("final next_offset = %d", output.NextOffset)
+			}
+			break
+		}
+		if output.ReturnedBytes == 0 {
+			t.Fatalf("page %d returned no bytes; pagination cannot progress", pages)
+		}
+		offset = output.NextOffset
+		if pages > 5 {
+			t.Fatal("pagination did not converge")
+		}
+	}
+	if string(content) != "x€y" {
+		t.Errorf("reassembled content = %q, want %q", content, "x€y")
+	}
+}
+
+func TestArtifactExcerptTrimsPartialRuneWhenPossible(t *testing.T) {
+	store := newTestStore(t)
+	runID := writeArtifact(t, store, "stdout.log", []byte("x€y"))
+	service := newTestService(t, store, newFakeBackend(), nil)
+
+	first, err := service.Artifact(context.Background(), ArtifactRequest{
+		RunID:        runID,
+		ArtifactType: ArtifactStdout,
+		MaxBytes:     3,
+	})
+	if err != nil {
+		t.Fatalf("Artifact() error = %v", err)
+	}
+	// The raw 3-byte window is 'x' plus two bytes of the euro sign. The second
+	// byte is a continuation byte, so the excerpt backs off to the ASCII rune.
+	if first.Content != "x" || first.ReturnedBytes != 1 || first.NextOffset != 1 {
+		t.Errorf("first excerpt = %+v, want the ASCII rune only", first)
+	}
+	if first.InvalidUTF8Replaced {
+		t.Error("first excerpt reports invalid UTF-8 after trimming")
+	}
+
+	second, err := service.Artifact(context.Background(), ArtifactRequest{
+		RunID:        runID,
+		ArtifactType: ArtifactStdout,
+		Offset:       first.NextOffset,
+		MaxBytes:     3,
+	})
+	if err != nil {
+		t.Fatalf("Artifact() error = %v", err)
+	}
+	if second.Content != "€" || second.ReturnedBytes != 3 || second.NextOffset != 4 {
+		t.Errorf("second excerpt = %+v, want the complete euro sign", second)
+	}
+	if second.InvalidUTF8Replaced {
+		t.Error("second excerpt reports invalid UTF-8")
+	}
+}
+
+func TestArtifactExcerptMakesForwardProgressOnTinyRuneWindow(t *testing.T) {
+	store := newTestStore(t)
+	runID := writeArtifact(t, store, "stdout.log", []byte("€"))
+	service := newTestService(t, store, newFakeBackend(), nil)
+
+	output, err := service.Artifact(context.Background(), ArtifactRequest{
+		RunID:        runID,
+		ArtifactType: ArtifactStdout,
+		MaxBytes:     2,
+	})
+	if err != nil {
+		t.Fatalf("Artifact() error = %v", err)
+	}
+	// A two-byte window cannot contain the three-byte rune. Returning it
+	// unchanged is the only way to guarantee forward progress.
+	if output.ReturnedBytes != 2 || output.NextOffset != 2 || !output.HasMore {
+		t.Errorf("excerpt = %+v, want two consumed bytes and a continuation", output)
+	}
+	if !output.InvalidUTF8Replaced {
+		t.Error("invalid_utf8_replaced = false for a split rune")
+	}
+}

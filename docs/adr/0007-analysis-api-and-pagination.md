@@ -129,8 +129,11 @@ errors occur in the SDK before the handler and are documented separately.
   `O_NOFOLLOW|O_NONBLOCK`, checked as a regular file and read as a bounded
   section. This rejects symlink and FIFO plants without blocking.
 - Excerpts default to 64 KiB and are hard-capped at 1 MiB. `returned_bytes` and
-  `next_offset` allow continuation. Invalid UTF-8 is replaced with U+FFFD and
-  flagged. No filesystem path is returned.
+  `next_offset` allow continuation. When an excerpt stops before EOF, a trailing
+  partial UTF-8 rune is moved back to the next rune boundary unless that would
+  return zero bytes; forward progress wins over boundary alignment for windows
+  smaller than one rune. Invalid UTF-8 is replaced with U+FFFD and flagged. No
+  filesystem path is returned.
 
 ### Bounds
 
