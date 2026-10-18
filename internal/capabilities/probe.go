@@ -333,4 +333,4 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 func (b *boundedBuffer) String() string { return b.buf.String() }
 
 // probeTimeout is the default bound for a single capability probe.
-const probeTimeout = 2 * time.Second
+const probeTimeout = 5 * time.Second

@@ -12,8 +12,8 @@ import (
 	"time"
 )
 
-// Session is one live or retained debugger session. The GDB implementation owns
-// a DAP client and a debugger process; tests can provide a fake.
+// Session is one live or retained debugger session. The GDB/LLDB implementation
+// owns a DAP client and a debugger process; tests can provide a fake.
 type Session interface {
 	ID() string
 	Status() Status

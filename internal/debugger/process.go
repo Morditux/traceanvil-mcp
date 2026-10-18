@@ -30,8 +30,8 @@ var gdbHardeningArgs = []string{
 	"-ex", "set debuginfod enabled off",
 	"-ex", "set history save off",
 	// The debuggee must never read from or write to the DAP pipe. /dev/null
-	// gives it a deterministic, non-interactive stdin/stdout: J6 exposes
-	// variables and stacks, not debuggee terminal I/O.
+	// gives GDB's inferior a deterministic, non-interactive stdin/stdout.
+	// LLDB uses a private PTY instead; neither terminal is exposed over MCP.
 	"-ex", "set inferior-tty /dev/null",
 }
 
@@ -40,6 +40,24 @@ func gdbCommandArgs() []string {
 	args = append(args, gdbBaseArgs...)
 	args = append(args, gdbHardeningArgs...)
 	return args
+}
+
+// lldbHardeningArgs disables the user/cwd .lldbinit loading and debuginfod
+// symbol lookup. The user init file is also unreachable through the private
+// HOME used by the session. lldb-dap itself is started without client flags.
+var lldbHardeningArgs = []string{
+	"-c", "settings set target.load-cwd-lldbinit false",
+	"-c", "settings set symbols.enable-external-lookup false",
+}
+
+func lldbCommandArgs() []string {
+	return append([]string(nil), lldbHardeningArgs...)
+}
+
+// LLDBHardeningArguments returns a copy of the debugger hardening arguments
+// for the capability probe. It is not a client-facing API.
+func LLDBHardeningArguments() []string {
+	return append([]string(nil), lldbHardeningArgs...)
 }
 
 // GDBHardeningArguments returns a copy of the hardening arguments for the
@@ -60,12 +78,12 @@ func ValidateGDBHardening(stderr string) error {
 	return nil
 }
 
-// gdbProcess owns one debugger process and its stdio pipes. GDB runs in its own
-// process group so shutdown can terminate GDB and any helpers that remain in
-// that group. GDB 17.1 puts the inferior in its own process group; debuggee
-// termination therefore relies on GDB's own teardown (and ptrace behavior), not
-// on the GDB process group alone.
-type gdbProcess struct {
+// debugProcess owns one debugger process (GDB or lldb-dap) and its stdio pipes.
+// It runs in its own process group so shutdown can terminate the adapter and
+// helpers that remain in that group. The inferiors may be in a different process
+// group; debuggee termination therefore relies on the adapter's disconnect and
+// teardown behavior (and verified PID checks), not on the debugger group alone.
+type debugProcess struct {
 	cmd    *exec.Cmd
 	stdin  io.WriteCloser
 	stdout io.ReadCloser
@@ -76,8 +94,8 @@ type gdbProcess struct {
 	waitErr   error
 }
 
-func startGDBProcess(binary, dir, home string) (*gdbProcess, error) {
-	cmd := exec.Command(binary, gdbCommandArgs()...)
+func startDebugProcess(binary string, args []string, dir, home string) (*debugProcess, error) {
+	cmd := exec.Command(binary, args...)
 	cmd.Dir = dir
 	cmd.Env = []string{
 		"PATH=/usr/local/bin:/usr/bin:/bin",
@@ -97,8 +115,8 @@ func startGDBProcess(binary, dir, home string) (*gdbProcess, error) {
 	// Use an explicit pipe instead of StdoutPipe. exec.Cmd.Wait closes a
 	// StdoutPipe as soon as the process exits, which can race the DAP reader and
 	// lose the final response or terminated event. With an os.Pipe, Wait cannot
-	// close the read side; EOF arrives only after GDB closes its inherited
-	// writer.
+	// close the read side; EOF arrives only after the debugger closes its
+	// inherited writer.
 	stdout, stdoutWriter, err := os.Pipe()
 	if err != nil {
 		_ = stdin.Close()
@@ -116,7 +134,7 @@ func startGDBProcess(binary, dir, home string) (*gdbProcess, error) {
 	}
 	_ = stdoutWriter.Close()
 
-	process := &gdbProcess{
+	process := &debugProcess{
 		cmd:    cmd,
 		stdin:  stdin,
 		stdout: stdout,
@@ -130,16 +148,16 @@ func startGDBProcess(binary, dir, home string) (*gdbProcess, error) {
 	return process, nil
 }
 
-// Read reads adapter DAP bytes from GDB stdout.
-func (p *gdbProcess) Read(data []byte) (int, error) { return p.stdout.Read(data) }
+// Read reads adapter DAP bytes from the debugger stdout.
+func (p *debugProcess) Read(data []byte) (int, error) { return p.stdout.Read(data) }
 
-// Write writes adapter DAP bytes to GDB stdin.
-func (p *gdbProcess) Write(data []byte) (int, error) { return p.stdin.Write(data) }
+// Write writes adapter DAP bytes to the debugger stdin.
+func (p *debugProcess) Write(data []byte) (int, error) { return p.stdin.Write(data) }
 
 // Close closes the stdio pipes. It is the transport Close used by the DAP
 // client and does not by itself terminate the process; session shutdown calls
 // Terminate or Detach explicitly.
-func (p *gdbProcess) Close() error {
+func (p *debugProcess) Close() error {
 	p.closeOnce.Do(func() {
 		_ = p.stdin.Close()
 		_ = p.stdout.Close()
@@ -147,11 +165,11 @@ func (p *gdbProcess) Close() error {
 	return nil
 }
 
-// Done is closed when the GDB process exits.
-func (p *gdbProcess) Done() <-chan struct{} { return p.done }
+// Done is closed when the debugger process exits.
+func (p *debugProcess) Done() <-chan struct{} { return p.done }
 
-// Exited reports whether GDB already exited.
-func (p *gdbProcess) Exited() bool {
+// Exited reports whether the debugger process already exited.
+func (p *debugProcess) Exited() bool {
 	select {
 	case <-p.done:
 		return true
@@ -160,8 +178,8 @@ func (p *gdbProcess) Exited() bool {
 	}
 }
 
-// Wait waits up to timeout for GDB to exit and returns its wait error.
-func (p *gdbProcess) Wait(timeout time.Duration) error {
+// Wait waits up to timeout for the debugger to exit and returns its wait error.
+func (p *debugProcess) Wait(timeout time.Duration) error {
 	if timeout <= 0 {
 		timeout = 2 * time.Second
 	}
@@ -169,17 +187,17 @@ func (p *gdbProcess) Wait(timeout time.Duration) error {
 	case <-p.done:
 		return p.waitErr
 	case <-time.After(timeout):
-		return errors.New("gdb process did not exit before the deadline")
+		return errors.New("debugger process did not exit before the deadline")
 	}
 }
 
-// Stderr returns the bounded GDB stderr tail.
-func (p *gdbProcess) Stderr() string { return p.stderr.String() }
+// Stderr returns the bounded debugger stderr tail.
+func (p *debugProcess) Stderr() string { return p.stderr.String() }
 
-// Terminate terminates GDB and any helpers remaining in its process group: TERM
-// first, then KILL after a short grace period. GDB's inferior may be in a
-// different process group and is normally stopped by GDB's own teardown.
-func (p *gdbProcess) Terminate() {
+// Terminate terminates the debugger and any helpers remaining in its process
+// group: TERM first, then KILL after a short grace period. An inferior in a
+// different process group is normally stopped by the adapter's disconnect.
+func (p *debugProcess) Terminate() {
 	if p.Exited() {
 		return
 	}
@@ -204,7 +222,7 @@ func (p *gdbProcess) Terminate() {
 // Detach releases GDB without signaling the debuggee's process group. GDB
 // itself is killed if closing its pipes did not make it exit; the debuggee is
 // intentionally left running.
-func (p *gdbProcess) Detach() {
+func (p *debugProcess) Detach() {
 	_ = p.Close()
 	select {
 	case <-p.done:

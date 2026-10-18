@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -119,13 +120,16 @@ func TestGDBDAPProbeRealGDB(t *testing.T) {
 	}
 }
 
-func TestConfigProbesIncludeGDBProbe(t *testing.T) {
-	cfg := &config.Config{Backends: config.Backends{GDB: true}}
+func TestConfigProbesIncludeGDBAndLLDBProbes(t *testing.T) {
+	cfg := &config.Config{Backends: config.Backends{GDB: true, LLDB: true}}
 	probes := NewConfigProbes(cfg)
-	var gdb Probe
+	var gdb, lldb Probe
 	for _, probe := range probes {
-		if probe.ID() == BackendGDB {
+		switch probe.ID() {
+		case BackendGDB:
 			gdb = probe
+		case BackendLLDB:
+			lldb = probe
 		}
 	}
 	if gdb == nil {
@@ -133,6 +137,12 @@ func TestConfigProbesIncludeGDBProbe(t *testing.T) {
 	}
 	if _, ok := gdb.(*DAPProbe); !ok {
 		t.Errorf("GDB probe type = %T, want *DAPProbe", gdb)
+	}
+	if lldb == nil {
+		t.Fatalf("NewConfigProbes() = %+v, want an LLDB probe", probes)
+	}
+	if _, ok := lldb.(*DAPProbe); !ok {
+		t.Errorf("LLDB probe type = %T, want *DAPProbe", lldb)
 	}
 }
 
@@ -171,5 +181,137 @@ sleep 0.1
 	}
 	if !strings.Contains(record.Reason, "hardening") {
 		t.Errorf("Reason = %q, want a hardening rejection", record.Reason)
+	}
+}
+
+func TestLLDBProbeVersionsDiscovery(t *testing.T) {
+	dir := t.TempDir()
+	writeExecutable(t, dir, "lldb-dap-21", `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "lldb-dap 21.1.8"
+  exit 0
+fi
+body='{"seq":0,"type":"response","request_seq":1,"command":"initialize","success":true,"body":{"supportsConfigurationDoneRequest":true}}'
+printf 'Content-Length: %d\r\n\r\n%s' "${#body}" "$body"
+/bin/sleep 0.1
+`)
+	t.Setenv("PATH", dir)
+
+	registry := NewRegistry([]Probe{NewLLDBProbe(true)}, time.Second)
+	record := registry.Refresh(context.Background())[0]
+	if record.State != StateAvailable {
+		t.Fatalf("State = %q, want available (reason: %s, detail: %s)",
+			record.State, record.Reason, record.Probe.Detail)
+	}
+	if !strings.HasSuffix(record.Path, "lldb-dap-21") {
+		t.Errorf("Path = %q, want the versioned adapter", record.Path)
+	}
+	if record.Version != "lldb-dap 21.1.8" {
+		t.Errorf("Version = %q", record.Version)
+	}
+}
+
+func TestLLDBProbeRealLLDB(t *testing.T) {
+	path, err := exec.LookPath("lldb-dap")
+	if err != nil {
+		t.Skip("lldb-dap is not installed")
+	}
+	if !filepath.IsAbs(path) {
+		t.Skipf("lldb-dap resolved through a relative PATH entry: %q", path)
+	}
+	registry := NewRegistry([]Probe{NewLLDBProbe(true)}, 5*time.Second)
+	record := registry.Refresh(context.Background())[0]
+	if record.State != StateAvailable {
+		t.Fatalf("State = %q, want available (reason: %s, detail: %s)",
+			record.State, record.Reason, record.Probe.Detail)
+	}
+	if !strings.Contains(strings.ToLower(record.Version), "lldb") {
+		t.Errorf("Version = %q", record.Version)
+	}
+}
+
+func TestLLDBProbeToleratesSlowVersion(t *testing.T) {
+	dir := t.TempDir()
+	writeExecutable(t, dir, "lldb-dap-21", `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  /bin/sleep 3
+  exit 0
+fi
+body='{"seq":0,"type":"response","request_seq":1,"command":"initialize","success":true,"body":{"supportsConfigurationDoneRequest":true}}'
+printf 'Content-Length: %d\r\n\r\n%s' "${#body}" "$body"
+/bin/sleep 0.1
+`)
+	t.Setenv("PATH", dir)
+
+	registry := NewRegistry([]Probe{NewLLDBProbe(true)}, 5*time.Second)
+	start := time.Now()
+	record := registry.Refresh(context.Background())[0]
+	if record.State != StateAvailable {
+		t.Fatalf("State = %q, want available (reason: %s, detail: %s)",
+			record.State, record.Reason, record.Probe.Detail)
+	}
+	if elapsed := time.Since(start); elapsed > 4*time.Second {
+		t.Errorf("probe took %s, should not wait for the full --version hang", elapsed)
+	}
+	if record.Version != "" {
+		t.Errorf("Version = %q, want empty when the optional version probe times out", record.Version)
+	}
+}
+
+func TestLLDBDiscoveryOrderAndCap(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"lldb-dap", "lldb-dap-3", "lldb-dap-9", "lldb-dap-14", "lldb-dap-21"} {
+		writeExecutable(t, dir, name, "#!/bin/sh\nexit 0\n")
+	}
+	t.Setenv("PATH", dir)
+	candidates := discoverLLDBDAP()
+	got := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		got = append(got, filepath.Base(candidate))
+	}
+	want := []string{"lldb-dap", "lldb-dap-21"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("discoverLLDBDAP() = %v, want %v", got, want)
+	}
+}
+
+func TestLLDBDiscoverySkipsRelativePathButFindsLaterAbsolute(t *testing.T) {
+	dir := t.TempDir()
+	writeExecutable(t, dir, "lldb-dap", "#!/bin/sh\nexit 0\n")
+	t.Setenv("PATH", "relative"+string(os.PathListSeparator)+dir)
+	candidates := discoverLLDBDAP()
+	if len(candidates) != 1 || filepath.Base(candidates[0]) != "lldb-dap" {
+		t.Fatalf("discoverLLDBDAP() = %v, want the absolute lldb-dap", candidates)
+	}
+}
+
+func TestLLDBProbeFallsBackAfterHungCandidate(t *testing.T) {
+	dir := t.TempDir()
+	writeExecutable(t, dir, "lldb-dap", `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "broken lldb-dap"
+  exit 0
+fi
+/bin/sleep 10
+`)
+	writeExecutable(t, dir, "lldb-dap-21", `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "lldb-dap 21.1.8"
+  exit 0
+fi
+body='{"seq":0,"type":"response","request_seq":1,"command":"initialize","success":true,"body":{"supportsConfigurationDoneRequest":true}}'
+printf 'Content-Length: %d\r\n\r\n%s' "${#body}" "$body"
+/bin/sleep 0.1
+`)
+	t.Setenv("PATH", dir)
+
+	registry := NewRegistry([]Probe{NewLLDBProbe(true)}, 5*time.Second)
+	record := registry.Refresh(context.Background())[0]
+	if record.State != StateAvailable {
+		t.Fatalf("State = %q, want available (reason: %s, detail: %s)",
+			record.State, record.Reason, record.Probe.Detail)
+	}
+	if !strings.HasSuffix(record.Path, "lldb-dap-21") {
+		t.Errorf("Path = %q, want the working versioned candidate", record.Path)
 	}
 }

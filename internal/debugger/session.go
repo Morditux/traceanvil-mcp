@@ -16,18 +16,20 @@ import (
 )
 
 const (
-	defaultRequestTimeout = 10 * time.Second
-	defaultStartupTimeout = 15 * time.Second
-	defaultStopTimeout    = 5 * time.Second
-	stopEntryTimeout      = 5 * time.Second
-	resumeStopWait        = 5 * time.Second
-	maxHitBreakpoints     = 64
-	maxEventName          = 64
+	defaultRequestTimeout     = 10 * time.Second
+	defaultStartupTimeout     = 15 * time.Second
+	defaultStopTimeout        = 5 * time.Second
+	stopEntryTimeout          = 5 * time.Second
+	teardownDisconnectTimeout = 1 * time.Second
+	resumeStopWait            = 5 * time.Second
+	maxHitBreakpoints         = 64
+	maxEventName              = 64
 )
 
-type gdbSessionOptions struct {
+type sessionOptions struct {
 	ID          string
 	TargetID    string
+	Backend     string
 	Program     string
 	Dir         string
 	Binary      string
@@ -42,11 +44,12 @@ type gdbSessionOptions struct {
 	StopTimeout    time.Duration
 }
 
-// gdbSession is one GDB DAP session. The event loop is the only consumer of the
-// DAP event channel; status reads are independent and always available.
-type gdbSession struct {
+// dapSession is one GDB or LLDB DAP session. The event loop is the only consumer
+// of the DAP event channel; status reads are independent and always available.
+type dapSession struct {
 	id             string
 	targetID       string
+	backend        backendSpec
 	backendVersion string
 	dir            string
 	stopOnEntry    bool
@@ -54,7 +57,7 @@ type gdbSession struct {
 	logger         *slog.Logger
 
 	client *dap.Client
-	proc   *gdbProcess
+	proc   *debugProcess
 	home   string
 
 	requestTimeout time.Duration
@@ -62,6 +65,9 @@ type gdbSession struct {
 
 	opMu   sync.Mutex
 	stopMu sync.Mutex
+
+	disconnectOnce sync.Once
+	disconnectErr  error
 
 	mu             sync.Mutex
 	state          State
@@ -73,6 +79,7 @@ type gdbSession struct {
 	startedAt      time.Time
 	updatedAt      time.Time
 	errText        string
+	launchErr      error
 	caps           Capabilities
 	defaultThread  int
 	hitBPTruncated bool
@@ -85,12 +92,16 @@ type gdbSession struct {
 	closeOnce     sync.Once
 }
 
-func startGDBSession(ctx context.Context, opts gdbSessionOptions) (Session, error) {
+func startSession(ctx context.Context, opts sessionOptions) (Session, error) {
 	if ctx == nil {
 		return nil, Errorf(CodeInvalidArgument, "nil context")
 	}
 	if opts.ID == "" || opts.TargetID == "" {
 		return nil, Errorf(CodeInternal, "session id and target id are required")
+	}
+	spec, err := backendSpecFor(opts.Backend)
+	if err != nil {
+		return nil, Wrap(CodeInvalidArgument, err, "%s", err)
 	}
 	if !filepath.IsAbs(opts.Program) || !filepath.IsAbs(opts.Dir) || !filepath.IsAbs(opts.Binary) {
 		return nil, Errorf(CodeInternal, "program, working directory and debugger must be absolute")
@@ -108,7 +119,7 @@ func startGDBSession(ctx context.Context, opts gdbSessionOptions) (Session, erro
 		opts.Logger = slog.New(slog.NewTextHandler(os.Stderr, nil))
 	}
 
-	home, err := os.MkdirTemp("", "mcp-gdb-session-")
+	home, err := os.MkdirTemp("", "mcp-"+spec.Name+"-session-")
 	if err != nil {
 		return nil, Wrap(CodeStartFailed, err, "create debugger session directory")
 	}
@@ -117,10 +128,10 @@ func startGDBSession(ctx context.Context, opts gdbSessionOptions) (Session, erro
 		return nil, Wrap(CodeStartFailed, err, "protect debugger session directory")
 	}
 
-	proc, err := startGDBProcess(opts.Binary, opts.Dir, home)
+	proc, err := startDebugProcess(opts.Binary, spec.Args, opts.Dir, home)
 	if err != nil {
 		removeProcessTemp(home)
-		return nil, Wrap(CodeStartFailed, err, "start gdb")
+		return nil, Wrap(CodeStartFailed, err, "start %s", spec.Name)
 	}
 
 	client, err := dap.New(proc, dap.Options{
@@ -143,9 +154,10 @@ func startGDBSession(ctx context.Context, opts gdbSessionOptions) (Session, erro
 		return nil, Wrap(CodeStartFailed, err, "create DAP client")
 	}
 
-	session := &gdbSession{
+	session := &dapSession{
 		id:             opts.ID,
 		targetID:       opts.TargetID,
+		backend:        spec,
 		backendVersion: opts.Version,
 		dir:            opts.Dir,
 		stopOnEntry:    opts.StopOnEntry,
@@ -168,15 +180,17 @@ func startGDBSession(ctx context.Context, opts gdbSessionOptions) (Session, erro
 	defer cancel()
 
 	caps, err := client.Initialize(startupCtx, dap.InitializeRequestArguments{
-		AdapterID:              "gdb",
+		AdapterID:              spec.AdapterID,
 		SupportsVariableType:   boolPtr(true),
 		SupportsVariablePaging: boolPtr(false),
 	})
 	if err != nil {
-		return nil, session.bootFailure("initialize GDB DAP", err)
+		return nil, session.bootFailure("initialize "+spec.Name+" DAP", err)
 	}
-	if err := session.verifyHardening(); err != nil {
-		return nil, session.bootFailure("verify GDB hardening", err)
+	if spec.HardeningCheck != nil {
+		if err := spec.HardeningCheck(proc.Stderr()); err != nil {
+			return nil, session.bootFailure("verify "+spec.Name+" hardening", err)
+		}
 	}
 	session.mu.Lock()
 	session.caps = Capabilities{
@@ -187,18 +201,13 @@ func startGDBSession(ctx context.Context, opts gdbSessionOptions) (Session, erro
 	}
 	session.mu.Unlock()
 
-	if err := session.waitFor(startupCtx, func() bool {
-		return session.initialized || session.state.Terminal()
-	}); err != nil {
-		return nil, session.bootFailure("wait for the DAP initialized event", err)
-	}
-	session.mu.Lock()
-	initialized := session.initialized
-	state := session.state
-	session.mu.Unlock()
-	if !initialized {
-		return nil, session.bootFailure("wait for the DAP initialized event",
-			fmt.Errorf("adapter entered state %q without an initialized event", state))
+	// DAP adapters differ in when they emit the initialized event. GDB sends it
+	// before launch; lldb-dap sends it after the launch request. In both cases
+	// configurationDone follows the initialized event.
+	if !spec.InitializedAfterLaunch {
+		if err := session.waitInitialized(startupCtx); err != nil {
+			return nil, session.bootFailure("wait for the DAP initialized event", err)
+		}
 	}
 
 	if err := client.BeginLaunch(); err != nil {
@@ -211,22 +220,34 @@ func startGDBSession(ctx context.Context, opts gdbSessionOptions) (Session, erro
 		"cwd":         opts.Dir,
 		"stopOnEntry": opts.StopOnEntry,
 	}
-	// GDB does not answer launch until configurationDone has arrived. Write the
-	// launch frame first, then send configurationDone, then await the launch
-	// response. RequestAsync returns once the launch frame is written.
+	// GDB does not answer launch until configurationDone has arrived; lldb-dap
+	// may answer launch before initialized. Write the launch frame first, then
+	// send configurationDone, then await the launch response. RequestAsync
+	// returns once the launch frame is written.
 	launchFuture, err := client.RequestAsync(startupCtx, "launch", launch)
 	if err != nil {
 		return nil, session.bootFailure("send launch", err)
 	}
 	// Observe a launch failure while configurationDone is being retried: a
 	// rejected launch leaves GDB permanently in the "launch not specified"
-	// state, and retrying would only hide the real adapter error.
+	// state, and retrying would only hide the real adapter error. Recording the
+	// error also wakes lldb-dap's initialized wait when launch is rejected
+	// before the initialized event.
 	launchErrors := make(chan error, 1)
 	go func() {
 		if _, err := launchFuture.Wait(startupCtx); err != nil {
+			session.mu.Lock()
+			session.launchErr = err
+			session.notifyLocked()
+			session.mu.Unlock()
 			launchErrors <- err
 		}
 	}()
+	if spec.InitializedAfterLaunch {
+		if err := session.waitInitialized(startupCtx); err != nil {
+			return nil, session.bootFailure("wait for the DAP initialized event", err)
+		}
+	}
 	if caps.SupportsConfigurationDoneRequest {
 		if err := session.sendConfigurationDone(startupCtx, launchErrors); err != nil {
 			return nil, session.bootFailure("send configurationDone", err)
@@ -245,7 +266,7 @@ func startGDBSession(ctx context.Context, opts gdbSessionOptions) (Session, erro
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) && startupCtx.Err() == nil {
 				return nil, session.bootFailure("wait for stop-on-entry",
-					fmt.Errorf("GDB did not report a stopped event within %s; the target may not be executable: %v", stopEntryTimeout, err))
+					fmt.Errorf("%s did not report a stopped event within %s; the target may not be executable: %v", spec.Name, stopEntryTimeout, err))
 			}
 			return nil, session.bootFailure("wait for stop-on-entry", err)
 		}
@@ -280,8 +301,28 @@ func startGDBSession(ctx context.Context, opts gdbSessionOptions) (Session, erro
 
 	session.logger.Info("debug session started",
 		"session_id", session.id, "target_id", session.targetID,
-		"backend", BackendGDB, "stop_on_entry", opts.StopOnEntry)
+		"backend", spec.Name, "stop_on_entry", opts.StopOnEntry)
 	return session, nil
+}
+
+func (s *dapSession) waitInitialized(ctx context.Context) error {
+	if err := s.waitFor(ctx, func() bool {
+		return s.initialized || s.state.Terminal() || s.launchErr != nil
+	}); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	initialized := s.initialized
+	state := s.state
+	launchErr := s.launchErr
+	s.mu.Unlock()
+	if launchErr != nil {
+		return fmt.Errorf("launch rejected before initialized: %w", launchErr)
+	}
+	if !initialized {
+		return fmt.Errorf("adapter entered state %q without an initialized event", state)
+	}
+	return nil
 }
 
 // sendConfigurationDone sends configurationDone after the launch frame. GDB
@@ -290,7 +331,7 @@ func startGDBSession(ctx context.Context, opts gdbSessionOptions) (Session, erro
 // specified". A successful response is the only signal that the launch state is
 // installed, so retry that specific transient rejection with a short bounded
 // backoff. The launch future is awaited by the caller afterwards.
-func (s *gdbSession) sendConfigurationDone(ctx context.Context, launchErrors <-chan error) error {
+func (s *dapSession) sendConfigurationDone(ctx context.Context, launchErrors <-chan error) error {
 	delay := 20 * time.Millisecond
 	for {
 		select {
@@ -316,18 +357,7 @@ func (s *gdbSession) sendConfigurationDone(ctx context.Context, launchErrors <-c
 	}
 }
 
-// verifyHardening fails closed when GDB rejected one of the security-critical
-// -ex commands. Otherwise an older adapter could silently run without
-// auto-load, shell or debuginfod hardening. The check runs before launch and
-// before any target code is loaded.
-func (s *gdbSession) verifyHardening() error {
-	if s.proc == nil {
-		return nil
-	}
-	return ValidateGDBHardening(s.proc.Stderr())
-}
-
-func (s *gdbSession) bootFailure(action string, cause error) error {
+func (s *dapSession) bootFailure(action string, cause error) error {
 	if cause == nil {
 		cause = errors.New("unknown startup failure")
 	}
@@ -350,30 +380,30 @@ func (s *gdbSession) bootFailure(action string, cause error) error {
 	}
 	detail := cause.Error()
 	if stderr := s.proc.Stderr(); stderr != "" {
-		detail += "; gdb stderr: " + truncateText(strings.TrimSpace(stderr), 500)
+		detail += "; " + s.backend.Name + " stderr: " + truncateText(strings.TrimSpace(stderr), 500)
 	}
 	return Wrap(code, cause, "%s: %s", action, detail)
 }
 
 // ID returns the opaque session id.
-func (s *gdbSession) ID() string { return s.id }
+func (s *dapSession) ID() string { return s.id }
 
 // WorkingDir returns the validated target working directory.
-func (s *gdbSession) WorkingDir() string { return s.dir }
+func (s *dapSession) WorkingDir() string { return s.dir }
 
 // Done is closed when the session resources are released.
-func (s *gdbSession) Done() <-chan struct{} { return s.done }
+func (s *dapSession) Done() <-chan struct{} { return s.done }
 
 // Status returns a consistent snapshot. It never contacts the adapter, so it
 // remains available after the debuggee exits or the transport fails.
-func (s *gdbSession) Status() Status {
+func (s *dapSession) Status() Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	status := Status{
 		SchemaVersion:  APISchemaVersion,
 		SessionID:      s.id,
-		Backend:        BackendGDB,
+		Backend:        s.backend.Name,
 		BackendVersion: s.backendVersion,
 		TargetID:       s.targetID,
 		State:          s.state,
@@ -404,10 +434,15 @@ func (s *gdbSession) Status() Status {
 		status.Warnings = append(status.Warnings,
 			fmt.Sprintf("hit breakpoint ids were truncated to %d entries", maxHitBreakpoints))
 	}
-	if s.stopOnEntry && s.stopGen == 1 && s.stop != nil &&
-		(s.stop.Reason == "stopped" || s.stop.Reason == "entry") {
-		status.Warnings = append(status.Warnings,
-			"GDB stop_on_entry stops at the process entry point, which may be in the dynamic loader; set a breakpoint to reach source")
+	if s.stopOnEntry && s.stopGen == 1 && s.stop != nil {
+		switch {
+		case s.backend.Name == BackendGDB && (s.stop.Reason == "stopped" || s.stop.Reason == "entry"):
+			status.Warnings = append(status.Warnings,
+				"GDB stop_on_entry stops at the process entry point, which may be in the dynamic loader; set a breakpoint to reach source")
+		case s.backend.Name == BackendLLDB && s.stop.Reason == "exception" && strings.Contains(s.stop.Description, "SIGSTOP"):
+			status.Warnings = append(status.Warnings,
+				"LLDB represents stop_on_entry as a SIGSTOP exception; set a breakpoint to reach source")
+		}
 	}
 	if s.state == StateFailed && status.Error == "" && s.client != nil {
 		if err := s.client.Err(); err != nil {
@@ -417,14 +452,14 @@ func (s *gdbSession) Status() Status {
 	return status
 }
 
-func (s *gdbSession) eventLoop() {
+func (s *dapSession) eventLoop() {
 	for event := range s.client.Events() {
 		s.handleEvent(event)
 	}
 	s.onClientClosed()
 }
 
-func (s *gdbSession) handleEvent(event dap.Event) {
+func (s *dapSession) handleEvent(event dap.Event) {
 	s.mu.Lock()
 	s.lastEvent = truncateText(event.Name, maxEventName)
 	s.lastEventAt = event.ReceivedAt
@@ -443,6 +478,9 @@ func (s *gdbSession) handleEvent(event dap.Event) {
 			HitBreakpoints    []int  `json:"hitBreakpointIds"`
 		}
 		_ = event.DecodeBody(&body)
+		if body.ThreadID > 0 {
+			s.defaultThread = body.ThreadID
+		}
 		if !s.state.Terminal() {
 			hitBreakpoints := body.HitBreakpoints
 			s.hitBPTruncated = len(hitBreakpoints) > maxHitBreakpoints
@@ -460,7 +498,10 @@ func (s *gdbSession) handleEvent(event dap.Event) {
 			}
 		}
 	case "continued":
-		if !s.state.Terminal() {
+		// A late continued event must not overwrite a newer stopped event. The
+		// resume path already sets running before writing its request, so a
+		// genuine continued always finds the session in a non-stopped state.
+		if !s.state.Terminal() && s.state != StateStopped {
 			s.state = StateRunning
 			s.stop = nil
 			s.hitBPTruncated = false
@@ -488,8 +529,27 @@ func (s *gdbSession) handleEvent(event dap.Event) {
 			ThreadID int    `json:"threadId"`
 		}
 		_ = event.DecodeBody(&body)
-		if body.Reason == "started" && body.ThreadID > 0 && s.defaultThread == 0 {
-			s.defaultThread = body.ThreadID
+		if body.ThreadID > 0 {
+			switch body.Reason {
+			case "started":
+				if s.defaultThread == 0 {
+					s.defaultThread = body.ThreadID
+				}
+			case "exited":
+				if s.defaultThread == body.ThreadID {
+					s.defaultThread = 0
+				}
+			}
+		}
+	case "process":
+		if s.backend.DefaultThreadFromProcess {
+			var body struct {
+				SystemProcessID int `json:"systemProcessId"`
+			}
+			_ = event.DecodeBody(&body)
+			if body.SystemProcessID > 0 && s.defaultThread == 0 {
+				s.defaultThread = body.SystemProcessID
+			}
 		}
 	}
 	s.notifyLocked()
@@ -500,7 +560,7 @@ func (s *gdbSession) handleEvent(event dap.Event) {
 	}
 }
 
-func (s *gdbSession) onClientClosed() {
+func (s *dapSession) onClientClosed() {
 	s.mu.Lock()
 	closing := s.closing
 	terminal := s.state.Terminal()
@@ -517,7 +577,7 @@ func (s *gdbSession) onClientClosed() {
 	s.releaseResources(true)
 }
 
-func (s *gdbSession) scheduleRelease() {
+func (s *dapSession) scheduleRelease() {
 	go func() {
 		select {
 		case <-time.After(500 * time.Millisecond):
@@ -527,15 +587,39 @@ func (s *gdbSession) scheduleRelease() {
 	}()
 }
 
-// releaseResources closes the DAP client and the GDB process exactly once. It
+// disconnect sends one disconnect request per session. Stop uses it explicitly;
+// releaseResources also calls it best-effort before closing a session that did
+// not take the normal Stop path. The first result is cached so a failed
+// best-effort attempt does not produce duplicate requests.
+func (s *dapSession) disconnect(ctx context.Context) error {
+	s.disconnectOnce.Do(func() {
+		if s.client == nil {
+			return
+		}
+		_, s.disconnectErr = s.client.Request(ctx, "disconnect", map[string]any{
+			"terminateDebuggee": true,
+		})
+	})
+	return s.disconnectErr
+}
+
+// releaseResources closes the DAP client and the debugger process exactly once. It
 // never changes the reported session state; callers set terminated, detached or
 // failed first.
-func (s *gdbSession) releaseResources(terminate bool) {
+func (s *dapSession) releaseResources(terminate bool) {
 	s.mu.Lock()
 	s.closing = true
 	s.mu.Unlock()
 
 	s.resourcesOnce.Do(func() {
+		if terminate && s.client != nil {
+			// Close/boot-failure paths do not go through debug_stop. Ask the
+			// adapter to terminate the inferior before closing its transport;
+			// the group kill below may not reach an inferior in another group.
+			disconnectCtx, cancel := context.WithTimeout(context.Background(), teardownDisconnectTimeout)
+			_ = s.disconnect(disconnectCtx)
+			cancel()
+		}
 		if s.client != nil {
 			_ = s.client.Close()
 		}
@@ -557,7 +641,7 @@ func (s *gdbSession) releaseResources(terminate bool) {
 
 // Close terminates the debuggee and releases the session. It is idempotent and
 // used by manager shutdown and retention.
-func (s *gdbSession) Close() {
+func (s *dapSession) Close() {
 	s.stopMu.Lock()
 	defer s.stopMu.Unlock()
 	s.closeOnce.Do(func() {
@@ -574,12 +658,12 @@ func (s *gdbSession) Close() {
 	})
 }
 
-func (s *gdbSession) notifyLocked() {
+func (s *dapSession) notifyLocked() {
 	close(s.changed)
 	s.changed = make(chan struct{})
 }
 
-func (s *gdbSession) waitFor(ctx context.Context, predicate func() bool) error {
+func (s *dapSession) waitFor(ctx context.Context, predicate func() bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -602,7 +686,7 @@ func (s *gdbSession) waitFor(ctx context.Context, predicate func() bool) error {
 	}
 }
 
-func (s *gdbSession) operationContext(ctx context.Context) (context.Context, context.CancelFunc, error) {
+func (s *dapSession) operationContext(ctx context.Context) (context.Context, context.CancelFunc, error) {
 	if ctx == nil {
 		return nil, nil, Errorf(CodeInvalidArgument, "nil context")
 	}
@@ -613,7 +697,7 @@ func (s *gdbSession) operationContext(ctx context.Context) (context.Context, con
 	return opCtx, cancel, nil
 }
 
-func (s *gdbSession) SetBreakpoints(ctx context.Context, req BreakpointsRequest) (BreakpointsResult, error) {
+func (s *dapSession) SetBreakpoints(ctx context.Context, req BreakpointsRequest) (BreakpointsResult, error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 
@@ -712,7 +796,7 @@ func (s *gdbSession) SetBreakpoints(ctx context.Context, req BreakpointsRequest)
 	return result, nil
 }
 
-func (s *gdbSession) Continue(ctx context.Context, req ContinueRequest) (ActionResult, error) {
+func (s *dapSession) Continue(ctx context.Context, req ContinueRequest) (ActionResult, error) {
 	thread, err := s.threadFor(req.ThreadID)
 	if err != nil {
 		return ActionResult{}, err
@@ -720,7 +804,7 @@ func (s *gdbSession) Continue(ctx context.Context, req ContinueRequest) (ActionR
 	return s.resume(ctx, "continue", "continue", map[string]any{"threadId": thread}, thread, false)
 }
 
-func (s *gdbSession) Step(ctx context.Context, req StepRequest) (ActionResult, error) {
+func (s *dapSession) Step(ctx context.Context, req StepRequest) (ActionResult, error) {
 	var command, action string
 	switch req.Kind {
 	case "next":
@@ -739,7 +823,7 @@ func (s *gdbSession) Step(ctx context.Context, req StepRequest) (ActionResult, e
 	return s.resume(ctx, action, command, map[string]any{"threadId": thread}, thread, true)
 }
 
-func (s *gdbSession) resume(ctx context.Context, action, command string, args map[string]any, thread int, waitForStop bool) (ActionResult, error) {
+func (s *dapSession) resume(ctx context.Context, action, command string, args map[string]any, thread int, waitForStop bool) (ActionResult, error) {
 	s.opMu.Lock()
 	locked := true
 	defer func() {
@@ -770,7 +854,7 @@ func (s *gdbSession) resume(ctx context.Context, action, command string, args ma
 
 	if _, err := s.client.Request(opCtx, command, args); err != nil {
 		// A DAP error response proves the resume did not happen. A timeout or
-		// cancellation does not: the frame may already have reached GDB. Keep
+		// cancellation does not: the frame may already have reached the adapter. Keep
 		// the conservative running state in that case instead of restoring a
 		// false stopped state and stale stop event.
 		if definitiveResumeFailure(err) {
@@ -822,7 +906,7 @@ func (s *gdbSession) resume(ctx context.Context, action, command string, args ma
 	return result, nil
 }
 
-func (s *gdbSession) Pause(ctx context.Context, req PauseRequest) (ActionResult, error) {
+func (s *dapSession) Pause(ctx context.Context, req PauseRequest) (ActionResult, error) {
 	s.opMu.Lock()
 	locked := true
 	defer func() {
@@ -886,7 +970,7 @@ func (s *gdbSession) Pause(ctx context.Context, req PauseRequest) (ActionResult,
 	return result, nil
 }
 
-func (s *gdbSession) Threads(ctx context.Context, req ThreadsRequest) (ThreadsResult, error) {
+func (s *dapSession) Threads(ctx context.Context, req ThreadsRequest) (ThreadsResult, error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 
@@ -953,7 +1037,7 @@ func (s *gdbSession) Threads(ctx context.Context, req ThreadsRequest) (ThreadsRe
 	return result, nil
 }
 
-func (s *gdbSession) StackTrace(ctx context.Context, req StackRequest) (StackResult, error) {
+func (s *dapSession) StackTrace(ctx context.Context, req StackRequest) (StackResult, error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 
@@ -1059,7 +1143,7 @@ func (s *gdbSession) StackTrace(ctx context.Context, req StackRequest) (StackRes
 	return result, nil
 }
 
-func (s *gdbSession) Scopes(ctx context.Context, req ScopesRequest) (ScopesResult, error) {
+func (s *dapSession) Scopes(ctx context.Context, req ScopesRequest) (ScopesResult, error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 
@@ -1139,7 +1223,7 @@ func (s *gdbSession) Scopes(ctx context.Context, req ScopesRequest) (ScopesResul
 	return result, nil
 }
 
-func (s *gdbSession) Variables(ctx context.Context, req VariablesRequest) (VariablesResult, error) {
+func (s *dapSession) Variables(ctx context.Context, req VariablesRequest) (VariablesResult, error) {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 
@@ -1239,7 +1323,7 @@ func (s *gdbSession) Variables(ctx context.Context, req VariablesRequest) (Varia
 	return result, nil
 }
 
-func (s *gdbSession) Stop(ctx context.Context, req StopRequest) (StopResult, error) {
+func (s *dapSession) Stop(ctx context.Context, req StopRequest) (StopResult, error) {
 	s.stopMu.Lock()
 	defer s.stopMu.Unlock()
 
@@ -1266,12 +1350,12 @@ func (s *gdbSession) Stop(ctx context.Context, req StopRequest) (StopResult, err
 	}
 
 	if !terminate {
-		// GDB 17.1 advertises supportTerminateDebuggee, but real detach tests
-		// show that the inferior may still be killed when GDB is released.
+		// Both adapters advertise supportTerminateDebuggee, but no detach path
+		// has been proven to preserve the inferior (the GDB J6 test failed).
 		// Refusing is safer than reporting a detach that did not preserve the
 		// debuggee. Callers can always terminate the session.
 		return StopResult{}, Errorf(CodeUnsupported,
-			"detach is not implemented at J6; call debug_stop with terminate=true")
+			"detach is not implemented; call debug_stop with terminate=true")
 	}
 
 	stopCtx := context.Background()
@@ -1280,9 +1364,7 @@ func (s *gdbSession) Stop(ctx context.Context, req StopRequest) (StopResult, err
 	}
 	disconnectCtx, cancel := context.WithTimeout(stopCtx, s.stopTimeout)
 	defer cancel()
-	_, disconnectErr := s.client.Request(disconnectCtx, "disconnect", map[string]any{
-		"terminateDebuggee": true,
-	})
+	disconnectErr := s.disconnect(disconnectCtx)
 
 	s.mu.Lock()
 	s.state = StateTerminated
@@ -1320,14 +1402,14 @@ func (s *gdbSession) Stop(ctx context.Context, req StopRequest) (StopResult, err
 	return result, nil
 }
 
-func (s *gdbSession) threadFor(requested int) (int, error) {
+func (s *dapSession) threadFor(requested int) (int, error) {
 	if requested > 0 {
 		return requested, nil
 	}
 	return s.threadForLocked(requested)
 }
 
-func (s *gdbSession) threadForLocked(requested int) (int, error) {
+func (s *dapSession) threadForLocked(requested int) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if requested > 0 {
@@ -1357,7 +1439,7 @@ func definitiveResumeFailure(err error) bool {
 		errors.Is(err, dap.ErrNilContext)
 }
 
-func (s *gdbSession) ensureGeneration(generation int) error {
+func (s *dapSession) ensureGeneration(generation int) error {
 	s.mu.Lock()
 	current := s.stopGen
 	s.mu.Unlock()
@@ -1372,7 +1454,7 @@ func staleGeneration(requested, current int) error {
 	return nil
 }
 
-func (s *gdbSession) requireStopped(state State, action string) error {
+func (s *dapSession) requireStopped(state State, action string) error {
 	if state.Terminal() {
 		return s.terminalError()
 	}
@@ -1382,7 +1464,7 @@ func (s *gdbSession) requireStopped(state State, action string) error {
 	return nil
 }
 
-func (s *gdbSession) terminalError() error {
+func (s *dapSession) terminalError() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	message := fmt.Sprintf("session is %s", s.state)
@@ -1392,7 +1474,7 @@ func (s *gdbSession) terminalError() error {
 	return Errorf(CodeSessionTerminated, "%s", message)
 }
 
-func (s *gdbSession) normalizeSource(name, path string) *Source {
+func (s *dapSession) normalizeSource(name, path string) *Source {
 	if name == "" && path == "" {
 		return nil
 	}
@@ -1490,7 +1572,7 @@ func mapDAPError(err error, action string) error {
 		message := responseErr.Error()
 		if strings.Contains(strings.ToLower(message), "not supported") ||
 			strings.Contains(strings.ToLower(message), "unsupported") {
-			return Wrap(CodeUnsupported, err, "%s is not supported by this GDB adapter: %s", action, truncateText(responseErr.Message, 512))
+			return Wrap(CodeUnsupported, err, "%s is not supported by this debugger adapter: %s", action, truncateText(responseErr.Message, 512))
 		}
 		return Wrap(CodeProtocol, err, "%s failed: %s", action, truncateText(responseErr.Message, 512))
 	}

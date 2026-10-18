@@ -372,7 +372,7 @@ func readIncoming(reader *bufio.Reader) (incoming, error) {
 	if err := json.Unmarshal(body, &message); err != nil {
 		return incoming{}, fmt.Errorf("%w: invalid JSON: %w", ErrProtocol, err)
 	}
-	if message.Seq <= 0 || message.Type == "" {
+	if message.Seq < 0 || message.Type == "" {
 		return incoming{}, fmt.Errorf("%w: invalid envelope", ErrProtocol)
 	}
 	return message, nil

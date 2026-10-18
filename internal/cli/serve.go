@@ -187,42 +187,53 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	return ExitSuccess
 }
 
-// newDebuggerService builds the GDB debug API when the backend is enabled.
-// A disabled backend gets no debug tools at all; an enabled but currently
-// unavailable backend keeps management tools hidden until it can be verified.
+// newDebuggerService builds the debug API when at least one debugger backend is
+// enabled. Disabled entries remain in the map so an explicit backend selection
+// returns backend_disabled rather than an unknown-backend error.
 func newDebuggerService(cfg *config.Config, resolver *policy.Resolver, registry *capabilities.Registry, logger *slog.Logger) (*debugger.Service, error) {
-	if !cfg.Backends.GDB {
+	if !cfg.Backends.GDB && !cfg.Backends.LLDB {
 		return nil, nil
 	}
 	return debugger.NewService(debugger.ServiceOptions{
-		Resolver:       resolver,
-		Roots:          resolver.ResolvedRoots(),
-		BackendEnabled: true,
-		BinaryProvider: func() (string, string, error) {
-			record, ok := registry.Get(capabilities.BackendGDB)
-			if !ok {
-				return "", "", errors.New("backend.gdb capability is not registered")
-			}
-			if record.State != capabilities.StateAvailable || record.Path == "" {
-				reason := record.Reason
-				if reason == "" {
-					reason = "gdb is " + string(record.State)
-				}
-				return "", "", errors.New(reason)
-			}
-			return record.Path, record.Version, nil
-		},
-		BackendAvailable: func() (bool, string) {
-			record, ok := registry.Get(capabilities.BackendGDB)
-			if !ok {
-				return false, "backend.gdb capability is not registered"
-			}
-			return record.State == capabilities.StateAvailable, record.Reason
+		Resolver: resolver,
+		Roots:    resolver.ResolvedRoots(),
+		Backends: map[string]debugger.BackendOptions{
+			debugger.BackendGDB:  debugBackendOptions(registry, capabilities.BackendGDB, cfg.Backends.GDB),
+			debugger.BackendLLDB: debugBackendOptions(registry, capabilities.BackendLLDB, cfg.Backends.LLDB),
 		},
 		Logger:           logger,
 		MaxSessions:      cfg.Limits.MaxSessions,
 		MaxResponseItems: cfg.Limits.MaxResponseItems,
 	})
+}
+
+func debugBackendOptions(registry *capabilities.Registry, id string, enabled bool) debugger.BackendOptions {
+	options := debugger.BackendOptions{Enabled: enabled}
+	if !enabled {
+		return options
+	}
+	options.BinaryProvider = func() (string, string, error) {
+		record, ok := registry.Get(id)
+		if !ok {
+			return "", "", fmt.Errorf("%s capability is not registered", id)
+		}
+		if record.State != capabilities.StateAvailable || record.Path == "" {
+			reason := record.Reason
+			if reason == "" {
+				reason = id + " is " + string(record.State)
+			}
+			return "", "", errors.New(reason)
+		}
+		return record.Path, record.Version, nil
+	}
+	options.Available = func() (bool, string) {
+		record, ok := registry.Get(id)
+		if !ok {
+			return false, fmt.Sprintf("%s capability is not registered", id)
+		}
+		return record.State == capabilities.StateAvailable, record.Reason
+	}
+	return options
 }
 
 // refreshFunc revalidates capabilities and reconciles tool exposure.

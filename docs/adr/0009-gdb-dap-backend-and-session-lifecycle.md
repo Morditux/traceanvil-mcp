@@ -115,7 +115,7 @@ an explicit warning. Request, startup and stop timeouts are 10/15/5 seconds.
 - Debuggee output is unavailable at J6; agents must use breakpoints and variable
   inspection. This avoids mixing inferior I/O with the DAP protocol.
 - Debug sessions are in-memory only; a server restart loses session records.
-- Attach, core dumps, evaluation, data breakpoints and LLDB remain later work.
+- At J6, attach, core dumps, evaluation, data breakpoints and LLDB remain later work; J7 adds LLDB in ADR 0010.
 - GDB DAP differences across versions still require the capability probe and the
   per-session capability checks; the J6 behavior is verified only against GDB
   17.1 on Ubuntu 26.04.

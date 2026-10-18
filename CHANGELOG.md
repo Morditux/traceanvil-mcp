@@ -122,6 +122,22 @@ released yet; milestones map to the development plan.
   running, debuggee PID termination and process cleanup.
 - J6: ADR 0009 and `docs/debugger.md`; README, SECURITY, configuration, MCP and
   compatibility documentation updated.
+- J7: LLDB DAP backend through `lldb-dap`, sharing the J6 DAP client, session
+  manager, policy, pagination and MCP tools.
+- J7: versioned `lldb-dap` discovery (`lldb-dap`, `lldb-dap-<N>`) in absolute
+  PATH directories, with a functional `initialize` handshake before
+  `backend.lldb` becomes available.
+- J7: adapter-specific startup ordering for lldb-dap (`launch` before
+  `initialized`), zero DAP sequence acceptance, process-event thread seeding and
+  SIGSTOP stop-on-entry handling.
+- J7: real LLDB integration and stdio MCP tests covering stop-on-entry,
+  breakpoints, continue, pause, step, threads, stack/scopes/locals, stripped
+  symbols, explicit detach refusal, debuggee PID termination and cleanup.
+- J7: hardening settings for LLDB (private HOME, cwd `.lldbinit` and external
+  symbol lookup disabled, private PTY) and a documented GDB/LLDB difference
+  matrix.
+- J7: ADR 0010, `docs/debugger.md` and compatibility documentation updated;
+  `backend.lldb` is available on the reference machine after the DAP handshake.
 
 ### Changed
 
@@ -152,6 +168,15 @@ released yet; milestones map to the development plan.
 - J6: `serve` constructs and closes the debugger service and session manager
   with the other runtime components. No new CLI command or configuration field
   is added; `limits.max_sessions` now bounds debugger sessions.
+- J7: debug action tools are published while either `backend.gdb` or
+  `backend.lldb` is available; `debug_start` accepts `backend: "lldb"` in
+  addition to the default `"gdb"`. `debug_status` and `debug_stop` remain
+  available for a retained session of either backend.
+- J7: the LLDB capability is no longer discovery-only. The LLDB probe launches
+  the adapter with fixed init settings and verifies the DAP handshake without
+  loading a target.
+- J7: the session implementation is backend-neutral (`backend.go`, `session.go`,
+  `process.go`) instead of a GDB-only file.
 
 ### Security
 
@@ -199,6 +224,16 @@ released yet; milestones map to the development plan.
   raw memory access is exposed.
 - J6: debugger pages and values are bounded; missing symbols are reported
   explicitly.
+- J7: lldb-dap runs with cwd/user init loading and external/debuginfod symbol
+  lookup disabled, a private HOME and a private PTY; no client-supplied LLDB
+  command, script or init file is accepted.
+- J7: LLDB's stop-on-entry is surfaced as a SIGSTOP exception warning, thread
+  and frame ids are treated as opaque, and large adapter events are drained and
+  bounded.
+- J7: detach remains refused for both backends even though each advertises
+  `supportTerminateDebuggee`; termination and teardown (stop, close, startup
+  failure) use a best-effort disconnect plus group cleanup, with fixture PID
+  checks.
 
 ## 0.0.0 — 2026-10-18
 

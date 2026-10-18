@@ -43,10 +43,11 @@ func DebugToolNames() []string {
 	}
 }
 
-// DebugDefinitions returns the MCP tool definitions for the J6 GDB debug API.
-// Start and execution actions are published only while backend.gdb is
-// available. Status and stop remain available for an existing session even if
-// the backend capability disappears, so resources can always be released.
+// DebugDefinitions returns the MCP tool definitions for the GDB/LLDB debug API.
+// Start and execution actions are published while at least one debugger
+// backend (GDB or LLDB) is available. Status and stop remain available for an
+// existing session even if the backend capability disappears, so resources can
+// always be released.
 func DebugDefinitions(service DebugService, caps *capabilities.Registry) []ToolDefinition {
 	if service == nil {
 		return nil
@@ -54,15 +55,25 @@ func DebugDefinitions(service DebugService, caps *capabilities.Registry) []ToolD
 
 	backendState := func() (capabilities.State, string) {
 		state := capabilities.StateUnknown
-		reason := "gdb capability is not registered"
+		reason := "no debugger backend capability is registered"
 		if caps != nil {
-			if record, ok := caps.Get(capabilities.BackendGDB); ok {
-				state = record.State
-				reason = record.Reason
+			for _, id := range []string{capabilities.BackendGDB, capabilities.BackendLLDB} {
+				record, ok := caps.Get(id)
+				if !ok {
+					continue
+				}
+				if record.State == capabilities.StateAvailable {
+					return record.State, record.Reason
+				}
+				if state != capabilities.StateAvailable {
+					state = record.State
+					if record.Reason != "" {
+						reason = record.Reason
+					} else {
+						reason = id + " is " + string(record.State)
+					}
+				}
 			}
-		}
-		if reason == "" {
-			reason = "gdb is unavailable"
 		}
 		return state, reason
 	}
@@ -80,6 +91,13 @@ func DebugDefinitions(service DebugService, caps *capabilities.Registry) []ToolD
 		return false, state, reason
 	}
 
+	actionAvailability := func() (bool, capabilities.State, string) {
+		state, reason := backendState()
+		return state == capabilities.StateAvailable, state, reason
+	}
+
+	debugBackends := []string{capabilities.BackendGDB, capabilities.BackendLLDB}
+
 	startAvailability := func() (bool, capabilities.State, string) {
 		state, reason := backendState()
 		if state != capabilities.StateAvailable {
@@ -93,16 +111,17 @@ func DebugDefinitions(service DebugService, caps *capabilities.Registry) []ToolD
 
 	return []ToolDefinition{
 		{
-			Name:               "debug_start",
-			RequiredCapability: capabilities.BackendGDB,
-			Available:          startAvailability,
+			Name:                 "debug_start",
+			RequiredCapabilities: debugBackends,
+			Available:            startAvailability,
 			Add: func(server *mcp.Server) {
 				mcp.AddTool(server, &mcp.Tool{
 					Name: "debug_start",
-					Description: "Launch one declared target under GDB over DAP. Only the gdb backend is " +
-						"implemented. The target id is resolved from configuration; this tool accepts no " +
-						"path, GDB flag, expression or shell command. stop_on_entry defaults to true. " +
-						"Returns a session_id to use with the other debug_* tools.",
+					Description: "Launch one declared target under GDB or LLDB over DAP. The target id is " +
+						"resolved from configuration; this tool accepts no path, debugger flag, expression " +
+						"or shell command. backend defaults to gdb when usable; otherwise lldb is used " +
+						"as the fallback when only lldb is available. " +
+						"stop_on_entry defaults to true. Returns a session_id for the other debug_* tools.",
 					Annotations: mutationAnnotations("Start debug session", true),
 				}, func(ctx context.Context, _ *mcp.CallToolRequest, input debugger.StartRequest) (*mcp.CallToolResult, debugger.Status, error) {
 					status, err := service.Start(ctx, input)
@@ -111,14 +130,15 @@ func DebugDefinitions(service DebugService, caps *capabilities.Registry) []ToolD
 			},
 		},
 		{
-			Name:      "debug_status",
-			Available: manageAvailability,
+			Name:                 "debug_status",
+			RequiredCapabilities: debugBackends,
+			Available:            manageAvailability,
 			Add: func(server *mcp.Server) {
 				mcp.AddTool(server, &mcp.Tool{
 					Name: "debug_status",
-					Description: "Report session state, the latest stop event and stop_generation without " +
-						"contacting GDB. Poll after a resume or pause; frame and variable references belong " +
-						"to one stop_generation.",
+					Description: "Report session state, backend, the latest stop event and stop_generation " +
+						"without contacting the adapter. Poll after a resume or pause; frame and variable " +
+						"references belong to one stop_generation.",
 					Annotations: readOnlyAnnotations("Debug status"),
 				}, func(ctx context.Context, _ *mcp.CallToolRequest, input debugger.StatusRequest) (*mcp.CallToolResult, debugger.Status, error) {
 					status, err := service.Status(ctx, input)
@@ -127,8 +147,9 @@ func DebugDefinitions(service DebugService, caps *capabilities.Registry) []ToolD
 			},
 		},
 		{
-			Name:               "debug_set_breakpoints",
-			RequiredCapability: capabilities.BackendGDB,
+			Name:                 "debug_set_breakpoints",
+			RequiredCapabilities: debugBackends,
+			Available:            actionAvailability,
 			Add: func(server *mcp.Server) {
 				mcp.AddTool(server, &mcp.Tool{
 					Name: "debug_set_breakpoints",
@@ -144,8 +165,9 @@ func DebugDefinitions(service DebugService, caps *capabilities.Registry) []ToolD
 			},
 		},
 		{
-			Name:               "debug_continue",
-			RequiredCapability: capabilities.BackendGDB,
+			Name:                 "debug_continue",
+			RequiredCapabilities: debugBackends,
+			Available:            actionAvailability,
 			Add: func(server *mcp.Server) {
 				mcp.AddTool(server, &mcp.Tool{
 					Name: "debug_continue",
@@ -160,8 +182,9 @@ func DebugDefinitions(service DebugService, caps *capabilities.Registry) []ToolD
 			},
 		},
 		{
-			Name:               "debug_pause",
-			RequiredCapability: capabilities.BackendGDB,
+			Name:                 "debug_pause",
+			RequiredCapabilities: debugBackends,
+			Available:            actionAvailability,
 			Add: func(server *mcp.Server) {
 				mcp.AddTool(server, &mcp.Tool{
 					Name: "debug_pause",
@@ -175,8 +198,9 @@ func DebugDefinitions(service DebugService, caps *capabilities.Registry) []ToolD
 			},
 		},
 		{
-			Name:               "debug_step",
-			RequiredCapability: capabilities.BackendGDB,
+			Name:                 "debug_step",
+			RequiredCapabilities: debugBackends,
+			Available:            actionAvailability,
 			Add: func(server *mcp.Server) {
 				mcp.AddTool(server, &mcp.Tool{
 					Name: "debug_step",
@@ -190,13 +214,14 @@ func DebugDefinitions(service DebugService, caps *capabilities.Registry) []ToolD
 			},
 		},
 		{
-			Name:               "debug_threads",
-			RequiredCapability: capabilities.BackendGDB,
+			Name:                 "debug_threads",
+			RequiredCapabilities: debugBackends,
+			Available:            actionAvailability,
 			Add: func(server *mcp.Server) {
 				mcp.AddTool(server, &mcp.Tool{
 					Name: "debug_threads",
 					Description: "Return one bounded page of adapter-reported threads. Thread ids are " +
-						"valid for the current session; a running target may report a changing set.",
+						"valid for the current session and differ between GDB and LLDB.",
 					Annotations: readOnlyAnnotations("Debug threads"),
 				}, func(ctx context.Context, _ *mcp.CallToolRequest, input debugger.ThreadsRequest) (*mcp.CallToolResult, debugger.ThreadsResult, error) {
 					result, err := service.Threads(ctx, input)
@@ -205,14 +230,16 @@ func DebugDefinitions(service DebugService, caps *capabilities.Registry) []ToolD
 			},
 		},
 		{
-			Name:               "debug_stack_trace",
-			RequiredCapability: capabilities.BackendGDB,
+			Name:                 "debug_stack_trace",
+			RequiredCapabilities: debugBackends,
+			Available:            actionAvailability,
 			Add: func(server *mcp.Server) {
 				mcp.AddTool(server, &mcp.Tool{
 					Name: "debug_stack_trace",
 					Description: "Return one bounded page of stack frames for a stopped thread. Source " +
 						"paths are workspace-relative; external paths and instruction pointers are omitted. " +
-						"Frames without symbols are reported as such, never invented.",
+						"Frames without symbols are reported as such, never invented. Backend differences " +
+						"in thread and frame ids are documented.",
 					Annotations: readOnlyAnnotations("Debug stack trace"),
 				}, func(ctx context.Context, _ *mcp.CallToolRequest, input debugger.StackRequest) (*mcp.CallToolResult, debugger.StackResult, error) {
 					result, err := service.StackTrace(ctx, input)
@@ -221,8 +248,9 @@ func DebugDefinitions(service DebugService, caps *capabilities.Registry) []ToolD
 			},
 		},
 		{
-			Name:               "debug_scopes",
-			RequiredCapability: capabilities.BackendGDB,
+			Name:                 "debug_scopes",
+			RequiredCapabilities: debugBackends,
+			Available:            actionAvailability,
 			Add: func(server *mcp.Server) {
 				mcp.AddTool(server, &mcp.Tool{
 					Name: "debug_scopes",
@@ -236,8 +264,9 @@ func DebugDefinitions(service DebugService, caps *capabilities.Registry) []ToolD
 			},
 		},
 		{
-			Name:               "debug_variables",
-			RequiredCapability: capabilities.BackendGDB,
+			Name:                 "debug_variables",
+			RequiredCapabilities: debugBackends,
+			Available:            actionAvailability,
 			Add: func(server *mcp.Server) {
 				mcp.AddTool(server, &mcp.Tool{
 					Name: "debug_variables",
@@ -252,14 +281,15 @@ func DebugDefinitions(service DebugService, caps *capabilities.Registry) []ToolD
 			},
 		},
 		{
-			Name:      "debug_stop",
-			Available: manageAvailability,
+			Name:                 "debug_stop",
+			RequiredCapabilities: debugBackends,
+			Available:            manageAvailability,
 			Add: func(server *mcp.Server) {
 				mcp.AddTool(server, &mcp.Tool{
 					Name: "debug_stop",
-					Description: "Terminate a debug session and release its GDB process. Detach is not " +
-						"implemented at J6: terminate=false is refused with unsupported_capability. Always " +
-						"available for an existing session, even if GDB later disappears.",
+					Description: "Terminate a debug session and release its debugger process. Detach is not " +
+						"implemented: terminate=false is refused with unsupported_capability. Always available " +
+						"for an existing session, even if the backend later disappears.",
 					Annotations: mutationAnnotations("Stop debug session", true),
 				}, func(ctx context.Context, _ *mcp.CallToolRequest, input debugger.StopRequest) (*mcp.CallToolResult, debugger.StopResult, error) {
 					result, err := service.Stop(ctx, input)

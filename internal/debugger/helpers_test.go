@@ -34,7 +34,7 @@ func TestTruncateUTF8(t *testing.T) {
 
 func TestNormalizeSource(t *testing.T) {
 	root := t.TempDir()
-	session := &gdbSession{roots: []string{root}}
+	session := &dapSession{roots: []string{root}}
 
 	workspace := session.normalizeSource("main.c", filepath.Join(root, "src", "main.c"))
 	if workspace == nil || workspace.Path != "src/main.c" || workspace.External {

@@ -18,12 +18,13 @@ import (
 	"github.com/Morditux/traceanvil-mcp/internal/policy"
 )
 
-type gdbHarness struct {
-	service *Service
-	root    string
-	source  string
-	program string
-	gdbPath string
+type debugHarness struct {
+	service      *Service
+	root         string
+	source       string
+	program      string
+	backend      string
+	debuggerPath string
 }
 
 func requireGDB(t *testing.T) string {
@@ -64,9 +65,25 @@ func buildDebugFixture(t *testing.T, root, name, source string, strip bool) stri
 	return out
 }
 
-func newGDBHarness(t *testing.T, source string, strip bool) *gdbHarness {
+func newGDBHarness(t *testing.T, source string, strip bool) *debugHarness {
+	return newDebugHarness(t, BackendGDB, source, strip)
+}
+
+func newLLDBHarness(t *testing.T, source string, strip bool) *debugHarness {
+	return newDebugHarness(t, BackendLLDB, source, strip)
+}
+
+func newDebugHarness(t *testing.T, backend, source string, strip bool) *debugHarness {
 	t.Helper()
-	gdbPath := requireGDB(t)
+	var debuggerPath string
+	switch backend {
+	case BackendGDB:
+		debuggerPath = requireGDB(t)
+	case BackendLLDB:
+		debuggerPath = requireLLDBDAP(t)
+	default:
+		t.Fatalf("unsupported test backend %q", backend)
+	}
 	root := t.TempDir()
 	program := buildDebugFixture(t, root, "fixture", source, strip)
 	cfg := &config.Config{
@@ -76,19 +93,23 @@ func newGDBHarness(t *testing.T, source string, strip bool) *gdbHarness {
 		}},
 	}
 	resolver := policy.New(cfg)
-	versionBytes, err := exec.Command(gdbPath, "--version").Output()
+	versionBytes, err := exec.Command(debuggerPath, "--version").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
 	version := strings.SplitN(string(versionBytes), "\n", 2)[0]
 	service, err := NewService(ServiceOptions{
-		Resolver:       resolver,
-		Roots:          resolver.ResolvedRoots(),
-		BackendEnabled: true,
-		BackendAvailable: func() (bool, string) {
-			return true, ""
+		Resolver: resolver,
+		Roots:    resolver.ResolvedRoots(),
+		Backends: map[string]BackendOptions{
+			backend: {
+				Enabled: true,
+				Available: func() (bool, string) {
+					return true, ""
+				},
+				BinaryProvider: func() (string, string, error) { return debuggerPath, version, nil },
+			},
 		},
-		BinaryProvider: func() (string, string, error) { return gdbPath, version, nil },
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 		MaxSessions:    2,
 		RequestTimeout: 10 * time.Second,
@@ -99,7 +120,25 @@ func newGDBHarness(t *testing.T, source string, strip bool) *gdbHarness {
 		t.Fatal(err)
 	}
 	t.Cleanup(service.Close)
-	return &gdbHarness{service: service, root: root, source: filepath.Join(root, "fixture.c"), program: program, gdbPath: gdbPath}
+	return &debugHarness{
+		service: service, root: root, source: filepath.Join(root, "fixture.c"),
+		program: program, backend: backend, debuggerPath: debuggerPath,
+	}
+}
+
+func requireLLDBDAP(t *testing.T) string {
+	t.Helper()
+	path, err := exec.LookPath("lldb-dap")
+	if err != nil {
+		t.Skip("lldb-dap is not installed")
+	}
+	if !filepath.IsAbs(path) {
+		t.Skipf("lldb-dap resolved through a relative PATH entry: %q", path)
+	}
+	if out, err := exec.Command(path, "--version").Output(); err != nil || !strings.Contains(strings.ToLower(string(out)), "lldb") {
+		t.Skipf("lldb-dap is not usable: %v %s", err, out)
+	}
+	return path
 }
 
 const breakpointSource = `#include <stdio.h>
@@ -119,11 +158,13 @@ int main(void) {
 }
 `
 
-func (h *gdbHarness) start(t *testing.T, stopOnEntry bool) Status {
+func (h *debugHarness) start(t *testing.T, stopOnEntry bool) Status {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	status, err := h.service.Start(ctx, StartRequest{TargetID: "fixture", StopOnEntry: &stopOnEntry})
+	status, err := h.service.Start(ctx, StartRequest{
+		TargetID: "fixture", Backend: h.backend, StopOnEntry: &stopOnEntry,
+	})
 	if err != nil {
 		t.Fatalf("Start(stopOnEntry=%t) error = %v", stopOnEntry, err)
 	}
@@ -133,7 +174,7 @@ func (h *gdbHarness) start(t *testing.T, stopOnEntry bool) Status {
 	return status
 }
 
-func (h *gdbHarness) waitFor(t *testing.T, sessionID string, predicate func(Status) bool) Status {
+func (h *debugHarness) waitFor(t *testing.T, sessionID string, predicate func(Status) bool) Status {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
@@ -277,11 +318,11 @@ func TestGDBBreakpointStackScopesVariablesStep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gdbSession, ok := session.(*gdbSession)
+	dapSession, ok := session.(*dapSession)
 	if !ok {
 		t.Fatalf("session type = %T", session)
 	}
-	if !gdbSession.proc.Exited() {
+	if !dapSession.proc.Exited() {
 		t.Error("gdb process is still running after debug_stop")
 	}
 	again, err := h.service.Stop(context.Background(), StopRequest{SessionID: started.SessionID})
@@ -399,11 +440,11 @@ func TestGDBStopWhileRunningTerminatesSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gdbSession, ok := session.(*gdbSession)
+	dapSession, ok := session.(*dapSession)
 	if !ok {
 		t.Fatalf("session type = %T", session)
 	}
-	if !gdbSession.proc.Exited() {
+	if !dapSession.proc.Exited() {
 		t.Error("gdb process is still running after stopping a running session")
 	}
 }
@@ -444,7 +485,7 @@ func processAlive(pid int) bool {
 	return text[index+2] != 'Z'
 }
 
-func waitDebuggeePID(t *testing.T, h *gdbHarness) int {
+func waitDebuggeePID(t *testing.T, h *debugHarness) int {
 	t.Helper()
 	pidPath := filepath.Join(h.root, "debuggee.pid")
 	deadline := time.Now().Add(5 * time.Second)
@@ -474,17 +515,17 @@ func TestGDBDetachUnsupportedLeavesSessionRunning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gdbSession, ok := session.(*gdbSession)
+	dapSession, ok := session.(*dapSession)
 	if !ok {
 		t.Fatalf("session type = %T", session)
 	}
-	if !gdbSession.caps.TerminateDebuggee {
+	if !dapSession.caps.TerminateDebuggee {
 		t.Error("GDB did not advertise supportTerminateDebuggee=true; detach refusal documentation needs review")
 	}
-	gdbGroup, _ := syscall.Getpgid(gdbSession.proc.cmd.Process.Pid)
+	gdbGroup, _ := syscall.Getpgid(dapSession.proc.cmd.Process.Pid)
 	debuggeeGroup, _ := syscall.Getpgid(pid)
 	t.Logf("gdb pid=%d pgid=%d; debuggee pid=%d pgid=%d",
-		gdbSession.proc.cmd.Process.Pid, gdbGroup, pid, debuggeeGroup)
+		dapSession.proc.cmd.Process.Pid, gdbGroup, pid, debuggeeGroup)
 
 	detach := false
 	if _, err := h.service.Stop(context.Background(), StopRequest{
@@ -524,16 +565,16 @@ func TestGDBServiceCloseTerminatesActiveSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gdbSession, ok := session.(*gdbSession)
+	dapSession, ok := session.(*dapSession)
 	if !ok {
 		t.Fatalf("session type = %T", session)
 	}
 	h.service.Close()
-	if !gdbSession.proc.Exited() {
+	if !dapSession.proc.Exited() {
 		t.Error("gdb process survived service shutdown")
 	}
 	select {
-	case <-gdbSession.Done():
+	case <-dapSession.Done():
 	case <-time.After(2 * time.Second):
 		t.Error("session resources were not released on service shutdown")
 	}
@@ -552,12 +593,12 @@ func TestGDBDebuggeeTerminationIsReported(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gdbSession, ok := session.(*gdbSession)
+	dapSession, ok := session.(*dapSession)
 	if !ok {
 		t.Fatalf("session type = %T", session)
 	}
 	select {
-	case <-gdbSession.Done():
+	case <-dapSession.Done():
 	case <-time.After(3 * time.Second):
 		t.Error("terminal session resources were not released")
 	}
@@ -582,14 +623,18 @@ func TestGDBStartFailureIsNamedAndLeavesNoSession(t *testing.T) {
 	}
 	resolver := policy.New(cfg)
 	service, err := NewService(ServiceOptions{
-		Resolver:       resolver,
-		Roots:          resolver.ResolvedRoots(),
-		BackendEnabled: true,
-		BackendAvailable: func() (bool, string) {
-			return true, ""
-		},
-		BinaryProvider: func() (string, string, error) {
-			return fakeGDB, "fake gdb 1.0", nil
+		Resolver: resolver,
+		Roots:    resolver.ResolvedRoots(),
+		Backends: map[string]BackendOptions{
+			BackendGDB: {
+				Enabled: true,
+				Available: func() (bool, string) {
+					return true, ""
+				},
+				BinaryProvider: func() (string, string, error) {
+					return fakeGDB, "fake gdb 1.0", nil
+				},
+			},
 		},
 		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
 		MaxSessions:    1,
@@ -630,5 +675,320 @@ func TestGDBInferiorStdinIsNotTheDAPPipe(t *testing.T) {
 	})
 	if final.Exit == nil || final.Exit.ExitCode != 0 {
 		t.Errorf("exit = %+v, want 0 (stdin must observe EOF, not DAP bytes)", final.Exit)
+	}
+}
+
+func TestLLDBCommonWorkflow(t *testing.T) {
+	h := newLLDBHarness(t, breakpointSource, false)
+	started := h.start(t, true)
+	if started.State != StateStopped || started.Backend != BackendLLDB {
+		t.Fatalf("started status = %+v", started)
+	}
+	if !started.Capabilities.TerminateDebuggee {
+		t.Error("LLDB did not advertise supportTerminateDebuggee")
+	}
+	if len(started.Warnings) == 0 {
+		t.Error("LLDB stop-on-entry has no warning")
+	}
+	detach := false
+	if _, err := h.service.Stop(context.Background(), StopRequest{
+		SessionID: started.SessionID, Terminate: &detach,
+	}); CodeOf(err) != CodeUnsupported {
+		t.Errorf("Stop(terminate=false) error = %v, want unsupported_capability", err)
+	}
+	refused, err := h.service.Status(context.Background(), StatusRequest{SessionID: started.SessionID})
+	if err != nil {
+		t.Fatalf("Status() after refused detach error = %v", err)
+	}
+	if refused.State != StateStopped || refused.StopGeneration != started.StopGeneration {
+		t.Fatalf("session changed after refused detach: %+v", refused)
+	}
+
+	bp, err := h.service.SetBreakpoints(context.Background(), BreakpointsRequest{
+		SessionID: started.SessionID, SourcePath: "fixture.c", Lines: []int{11},
+	})
+	if err != nil {
+		t.Fatalf("SetBreakpoints() error = %v", err)
+	}
+	if len(bp.Breakpoints) != 1 || !bp.Breakpoints[0].Verified {
+		t.Fatalf("breakpoints = %+v", bp.Breakpoints)
+	}
+
+	if _, err := h.service.Continue(context.Background(), ContinueRequest{SessionID: started.SessionID}); err != nil {
+		t.Fatalf("Continue() error = %v", err)
+	}
+	stopped := h.waitFor(t, started.SessionID, func(status Status) bool {
+		return status.State == StateStopped && status.StopGeneration > started.StopGeneration
+	})
+	if stopped.Stop == nil || stopped.Stop.ThreadID == 0 {
+		t.Fatalf("stopped = %+v", stopped.Stop)
+	}
+
+	threads, err := h.service.Threads(context.Background(), ThreadsRequest{SessionID: started.SessionID})
+	if err != nil || threads.Total == 0 {
+		t.Fatalf("Threads() = %+v, %v", threads, err)
+	}
+	stack, err := h.service.StackTrace(context.Background(), StackRequest{
+		SessionID: started.SessionID, ThreadID: stopped.Stop.ThreadID, Levels: 10,
+	})
+	if err != nil {
+		t.Fatalf("StackTrace() error = %v", err)
+	}
+	var mainFrame *Frame
+	for i := range stack.Frames {
+		if stack.Frames[i].Name == "main" {
+			mainFrame = &stack.Frames[i]
+		}
+		if stack.Frames[i].Source != nil && filepath.IsAbs(stack.Frames[i].Source.Path) {
+			t.Errorf("absolute source path exposed: %+v", stack.Frames[i].Source)
+		}
+	}
+	if mainFrame == nil || mainFrame.Source == nil || mainFrame.Source.Path != "fixture.c" {
+		t.Fatalf("main frame = %+v; frames = %+v", mainFrame, stack.Frames)
+	}
+
+	scopes, err := h.service.Scopes(context.Background(), ScopesRequest{
+		SessionID: started.SessionID, FrameID: mainFrame.ID, StopGeneration: stopped.StopGeneration,
+	})
+	if err != nil {
+		t.Fatalf("Scopes() error = %v", err)
+	}
+	var locals *Scope
+	for i := range scopes.Scopes {
+		if scopes.Scopes[i].Name == "Locals" {
+			locals = &scopes.Scopes[i]
+		}
+	}
+	if locals == nil {
+		t.Fatalf("no Locals scope in %+v", scopes.Scopes)
+	}
+	variables, err := h.service.Variables(context.Background(), VariablesRequest{
+		SessionID: started.SessionID, VariablesReference: locals.VariablesReference,
+		Count: 20, StopGeneration: stopped.StopGeneration,
+	})
+	if err != nil {
+		t.Fatalf("Variables() error = %v", err)
+	}
+	values := make(map[string]string)
+	for _, variable := range variables.Variables {
+		values[variable.Name] = variable.Value
+	}
+	if values["x"] != "1" || values["y"] != "2" {
+		t.Errorf("locals = %+v, want x=1 y=2", variables.Variables)
+	}
+
+	stepResult, err := h.service.Step(context.Background(), StepRequest{
+		SessionID: started.SessionID, Kind: "next", ThreadID: stopped.Stop.ThreadID,
+	})
+	if err != nil {
+		t.Fatalf("Step() error = %v", err)
+	}
+	if !stepResult.Accepted || stepResult.State != StateStopped {
+		t.Errorf("Step() = %+v, want an accepted stop", stepResult)
+	}
+
+	stopResult, err := h.service.Stop(context.Background(), StopRequest{SessionID: started.SessionID})
+	if err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if !stopResult.Terminated || stopResult.Status.State != StateTerminated {
+		t.Errorf("Stop() = %+v", stopResult)
+	}
+	session, err := h.service.manager.Get(started.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dapSession, ok := session.(*dapSession)
+	if !ok {
+		t.Fatalf("session type = %T", session)
+	}
+	if !dapSession.proc.Exited() {
+		t.Error("lldb-dap process is still running after debug_stop")
+	}
+}
+
+func TestLLDBRunningPauseStackTraceAndStop(t *testing.T) {
+	h := newLLDBHarness(t, hangSource, false)
+	started := h.start(t, false)
+	if started.State != StateRunning {
+		t.Fatalf("started state = %q, want running", started.State)
+	}
+	pauseResult, err := h.service.Pause(context.Background(), PauseRequest{SessionID: started.SessionID})
+	if err != nil {
+		t.Fatalf("Pause() error = %v", err)
+	}
+	if !pauseResult.Accepted || pauseResult.State != StateStopped {
+		t.Errorf("Pause() = %+v, want an accepted stop", pauseResult)
+	}
+	stopped := h.waitFor(t, started.SessionID, func(status Status) bool {
+		return status.State == StateStopped && status.StopGeneration > started.StopGeneration
+	})
+	threads, err := h.service.Threads(context.Background(), ThreadsRequest{SessionID: started.SessionID})
+	if err != nil || threads.Total == 0 {
+		t.Fatalf("Threads() = %+v, %v", threads, err)
+	}
+	stack, err := h.service.StackTrace(context.Background(), StackRequest{
+		SessionID: stopped.SessionID, ThreadID: threads.Threads[0].ID, Levels: 20,
+	})
+	if err != nil || stack.Returned == 0 {
+		t.Fatalf("StackTrace() = %+v, %v", stack, err)
+	}
+	result, err := h.service.Stop(context.Background(), StopRequest{SessionID: started.SessionID})
+	if err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if !result.Terminated {
+		t.Errorf("Stop() = %+v", result)
+	}
+}
+
+func TestLLDBStrippedSymbolsAreExplicitlyDegraded(t *testing.T) {
+	h := newLLDBHarness(t, breakpointSource, true)
+	started := h.start(t, true)
+	stack, err := h.service.StackTrace(context.Background(), StackRequest{
+		SessionID: started.SessionID, ThreadID: started.Stop.ThreadID, Levels: 20,
+	})
+	if err != nil {
+		t.Fatalf("StackTrace() error = %v", err)
+	}
+	for _, frame := range stack.Frames {
+		if frame.Source != nil && filepath.IsAbs(frame.Source.Path) {
+			t.Errorf("absolute source path exposed: %+v", frame.Source)
+		}
+	}
+	if stack.Returned > 0 && len(stack.Warnings) == 0 {
+		t.Error("stripped LLDB stack has no warning")
+	}
+	if _, err := h.service.Stop(context.Background(), StopRequest{SessionID: started.SessionID}); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+}
+
+func TestLLDBStopKillsDebuggee(t *testing.T) {
+	h := newLLDBHarness(t, detachSource, false)
+	started := h.start(t, false)
+	pid := waitDebuggeePID(t, h)
+	if _, err := h.service.Stop(context.Background(), StopRequest{SessionID: started.SessionID}); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for processAlive(pid) && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if processAlive(pid) {
+		t.Fatalf("debuggee %d survived LLDB stop", pid)
+	}
+}
+
+func TestLLDBStartFailureIsNamed(t *testing.T) {
+	root := t.TempDir()
+	fake := filepath.Join(root, "lldb-dap")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		WorkspaceRoots: []string{root},
+		AllowedTargets: []config.Target{{ID: "fixture", Program: fake, Cwd: root}},
+	}
+	resolver := policy.New(cfg)
+	service, err := NewService(ServiceOptions{
+		Resolver: resolver,
+		Roots:    resolver.ResolvedRoots(),
+		Backends: map[string]BackendOptions{
+			BackendLLDB: {
+				Enabled:        true,
+				Available:      func() (bool, string) { return true, "" },
+				BinaryProvider: func() (string, string, error) { return fake, "fake lldb-dap", nil },
+			},
+		},
+		Logger:         slog.New(slog.NewTextHandler(io.Discard, nil)),
+		MaxSessions:    1,
+		StartupTimeout: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	if _, err := service.Start(context.Background(), StartRequest{TargetID: "fixture", Backend: BackendLLDB}); CodeOf(err) != CodeStartFailed {
+		t.Errorf("Start() error = %v, want start_failed", err)
+	}
+}
+
+func TestLLDBDoesNotLoadCwdInitFile(t *testing.T) {
+	h := newLLDBHarness(t, breakpointSource, false)
+	marker := filepath.Join(h.root, "lldbinit-ran")
+	initFile := filepath.Join(h.root, ".lldbinit")
+	content := "shell /bin/touch " + marker + "\n"
+	if err := os.WriteFile(initFile, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	started := h.start(t, true)
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("cwd .lldbinit was executed (marker err = %v)", err)
+	}
+	if _, err := h.service.Stop(context.Background(), StopRequest{SessionID: started.SessionID}); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+}
+
+func TestLLDBServiceCloseKillsDebuggee(t *testing.T) {
+	h := newLLDBHarness(t, detachSource, false)
+	started := h.start(t, false)
+	if started.State != StateRunning {
+		t.Fatalf("started state = %q, want running", started.State)
+	}
+	pid := waitDebuggeePID(t, h)
+	h.service.Close()
+	deadline := time.Now().Add(3 * time.Second)
+	for processAlive(pid) && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if processAlive(pid) {
+		t.Fatalf("debuggee %d survived LLDB service close", pid)
+	}
+}
+
+const stdinIsolationSource = `#include <stdio.h>
+#include <unistd.h>
+int main(void) {
+    FILE *f = fopen("debuggee.pid", "w");
+    if (f) { fprintf(f, "%d\n", getpid()); fclose(f); }
+    char buffer[32];
+    if (fgets(buffer, sizeof buffer, stdin)) return 1;
+    return 0;
+}
+`
+
+func TestLLDBInferiorStdinIsNotTheDAPPipe(t *testing.T) {
+	h := newLLDBHarness(t, stdinIsolationSource, false)
+	started := h.start(t, false)
+	if started.State != StateRunning {
+		t.Fatalf("started state = %q, want running while stdin blocks", started.State)
+	}
+	pid := waitDebuggeePID(t, h)
+	session, err := h.service.manager.Get(started.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dapSession, ok := session.(*dapSession)
+	if !ok {
+		t.Fatalf("session type = %T", session)
+	}
+	debuggeeStdin, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/0", pid))
+	if err != nil {
+		t.Fatalf("read debuggee stdin: %v", err)
+	}
+	adapterStdin, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/0", dapSession.proc.cmd.Process.Pid))
+	if err != nil {
+		t.Fatalf("read lldb-dap stdin: %v", err)
+	}
+	if debuggeeStdin == adapterStdin {
+		t.Fatalf("debuggee shares the DAP stdin pipe: %q", debuggeeStdin)
+	}
+	if strings.HasPrefix(debuggeeStdin, "pipe:") {
+		t.Errorf("debuggee stdin = %q, want a PTY or /dev/null rather than a pipe", debuggeeStdin)
+	}
+	if _, err := h.service.Stop(context.Background(), StopRequest{SessionID: started.SessionID}); err != nil {
+		t.Fatalf("Stop() error = %v", err)
 	}
 }

@@ -40,18 +40,20 @@ no analysis backend installed.
 - A registry stores one record per capability with state
   `available|unavailable|disabled|unsupported|unknown`, resolved path, version,
   reason, last check, probe outcome and duration.
-- Probes run concurrently with a per-probe timeout (2 seconds by default), a
+- Probes run concurrently with a per-probe timeout (5 seconds by default), a
   panic recovery boundary and bounded output capture.
 - Version probes invoke only the resolved binary with `--version`, a minimal
   `LC_ALL=C` environment and `WaitDelay`, so a grandchild cannot hold the pipes
   open past the deadline. No user program is executed. Relative `PATH` entries
   are rejected so a binary planted in the process working directory cannot be
   picked up implicitly.
-- `lldb-dap` is resolved but not executed at J1: its `--version` behaviour is
-  not guaranteed to terminate.
+- `lldb-dap` was resolved but not executed at J1 because its `--version`
+  behavior is not guaranteed to terminate. The J7 probe executes it only for a
+  bounded DAP initialize handshake and treats `--version` as optional.
 - Discovery success yields `unknown`, never `available`. A binary being present
   does not prove its analysis features work. Functional probes arrive with J3
-  (Valgrind), J6 (GDB) and J7 (LLDB).
+  (Valgrind), J6 (GDB) and J7 (LLDB); the J7 probe discovers versioned
+  `lldb-dap` names and requires a DAP handshake.
 - Disabled backends yield `disabled`; missing executables yield `unavailable`.
   Neither aborts server startup.
 - The registry is safe for concurrent reads during refresh.

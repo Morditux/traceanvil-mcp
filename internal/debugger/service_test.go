@@ -12,12 +12,18 @@ import (
 	"github.com/Morditux/traceanvil-mcp/internal/policy"
 )
 
+func setGDBBackend(opts *ServiceOptions, update func(*BackendOptions)) {
+	backend := opts.Backends[BackendGDB]
+	update(&backend)
+	opts.Backends[BackendGDB] = backend
+}
+
 type serviceHarness struct {
 	service  *Service
 	root     string
 	program  string
 	resolver *policy.Resolver
-	captured *gdbSessionOptions
+	captured *sessionOptions
 	session  *fakeSession
 }
 
@@ -45,23 +51,27 @@ func newServiceHarness(t *testing.T, configure func(*ServiceOptions)) *serviceHa
 		}},
 	}
 	resolver := policy.New(cfg)
-	captured := &gdbSessionOptions{}
+	captured := &sessionOptions{}
 	h := &serviceHarness{root: root, program: program, resolver: resolver, captured: captured}
 
 	opts := ServiceOptions{
-		Resolver:         resolver,
-		Roots:            resolver.ResolvedRoots(),
-		BackendEnabled:   true,
-		BackendAvailable: func() (bool, string) { return true, "" },
-		BinaryProvider:   func() (string, string, error) { return program, "fake-gdb 1.0", nil },
+		Resolver: resolver,
+		Roots:    resolver.ResolvedRoots(),
+		Backends: map[string]BackendOptions{
+			BackendGDB: {
+				Enabled:        true,
+				Available:      func() (bool, string) { return true, "" },
+				BinaryProvider: func() (string, string, error) { return program, "fake-gdb 1.0", nil },
+			},
+		},
 		MaxSessions:      2,
 		MaxResponseItems: 5,
 		ReapInterval:     time.Hour,
-		Starter: func(_ context.Context, sessionOpts gdbSessionOptions) (Session, error) {
+		Starter: func(_ context.Context, sessionOpts sessionOptions) (Session, error) {
 			*captured = sessionOpts
 			h.session = newFakeSession(sessionOpts.ID)
 			h.session.dir = sessionOpts.Dir
-			h.session.status.Backend = BackendGDB
+			h.session.status.Backend = sessionOpts.Backend
 			h.session.status.BackendVersion = sessionOpts.Version
 			h.session.status.TargetID = sessionOpts.TargetID
 			return h.session, nil
@@ -139,20 +149,24 @@ func TestServiceStartErrors(t *testing.T) {
 }
 
 func TestServiceBackendGates(t *testing.T) {
-	h := newServiceHarness(t, func(opts *ServiceOptions) { opts.BackendEnabled = false })
+	h := newServiceHarness(t, func(opts *ServiceOptions) { setGDBBackend(opts, func(gdb *BackendOptions) { gdb.Enabled = false }) })
 	if _, err := h.service.Start(context.Background(), StartRequest{TargetID: "fixture"}); CodeOf(err) != CodeBackendDisabled {
 		t.Errorf("disabled backend error = %v, want backend_disabled", err)
 	}
 
 	h = newServiceHarness(t, func(opts *ServiceOptions) {
-		opts.BackendAvailable = func() (bool, string) { return false, "probe failed" }
+		setGDBBackend(opts, func(gdb *BackendOptions) {
+			gdb.Available = func() (bool, string) { return false, "probe failed" }
+		})
 	})
 	if _, err := h.service.Start(context.Background(), StartRequest{TargetID: "fixture"}); CodeOf(err) != CodeBackendUnavailable {
 		t.Errorf("unavailable backend error = %v, want backend_unavailable", err)
 	}
 
 	h = newServiceHarness(t, func(opts *ServiceOptions) {
-		opts.BinaryProvider = func() (string, string, error) { return "/does/not/exist", "", nil }
+		setGDBBackend(opts, func(gdb *BackendOptions) {
+			gdb.BinaryProvider = func() (string, string, error) { return "/does/not/exist", "", nil }
+		})
 	})
 	if _, err := h.service.Start(context.Background(), StartRequest{TargetID: "fixture"}); CodeOf(err) != CodeBackendUnavailable {
 		t.Errorf("bad binary error = %v, want backend_unavailable", err)
@@ -180,12 +194,14 @@ func TestServiceQuotaAndSessionLifetime(t *testing.T) {
 func TestServiceStatusAndStopSurviveBackendLoss(t *testing.T) {
 	available := true
 	h := newServiceHarness(t, func(opts *ServiceOptions) {
-		opts.BackendAvailable = func() (bool, string) {
-			if available {
-				return true, ""
+		setGDBBackend(opts, func(gdb *BackendOptions) {
+			gdb.Available = func() (bool, string) {
+				if available {
+					return true, ""
+				}
+				return false, "gdb removed"
 			}
-			return false, "gdb removed"
-		}
+		})
 	})
 	started := h.start(t, StartRequest{TargetID: "fixture"})
 	available = false
@@ -401,5 +417,52 @@ func TestServiceHasTargetsRevalidatesFilesystem(t *testing.T) {
 	}
 	if h.service.HasTargets() {
 		t.Error("HasTargets() = true after the target program disappeared")
+	}
+}
+
+func TestServiceLLDBBackendSelection(t *testing.T) {
+	h := newServiceHarness(t, func(opts *ServiceOptions) {
+		opts.Backends[BackendLLDB] = BackendOptions{
+			Enabled:        true,
+			Available:      func() (bool, string) { return true, "" },
+			BinaryProvider: func() (string, string, error) { return "/bin/true", "fake-lldb 1.0", nil },
+		}
+	})
+	status, err := h.service.Start(context.Background(), StartRequest{TargetID: "fixture", Backend: BackendLLDB})
+	if err != nil {
+		t.Fatalf("Start(lldb) error = %v", err)
+	}
+	if h.captured.Backend != BackendLLDB {
+		t.Errorf("captured backend = %q", h.captured.Backend)
+	}
+	if status.Backend != BackendLLDB {
+		t.Errorf("status backend = %q", status.Backend)
+	}
+}
+
+func TestServiceLLDBDisabled(t *testing.T) {
+	h := newServiceHarness(t, func(opts *ServiceOptions) {
+		opts.Backends[BackendLLDB] = BackendOptions{Enabled: false}
+	})
+	if _, err := h.service.Start(context.Background(), StartRequest{TargetID: "fixture", Backend: BackendLLDB}); CodeOf(err) != CodeBackendDisabled {
+		t.Fatalf("Start(lldb) error = %v, want backend_disabled", err)
+	}
+}
+
+func TestServiceDefaultsToAvailableBackend(t *testing.T) {
+	h := newServiceHarness(t, func(opts *ServiceOptions) {
+		setGDBBackend(opts, func(gdb *BackendOptions) { gdb.Enabled = false })
+		opts.Backends[BackendLLDB] = BackendOptions{
+			Enabled:        true,
+			Available:      func() (bool, string) { return true, "" },
+			BinaryProvider: func() (string, string, error) { return "/bin/true", "fake-lldb 1.0", nil },
+		}
+	})
+	status, err := h.service.Start(context.Background(), StartRequest{TargetID: "fixture"})
+	if err != nil {
+		t.Fatalf("Start(default) error = %v", err)
+	}
+	if h.captured.Backend != BackendLLDB || status.Backend != BackendLLDB {
+		t.Fatalf("captured backend = %q, status backend = %q; want lldb fallback", h.captured.Backend, status.Backend)
 	}
 }

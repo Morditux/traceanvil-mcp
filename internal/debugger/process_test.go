@@ -22,7 +22,7 @@ exit 0
 		t.Fatal(err)
 	}
 
-	process, err := startGDBProcess(script, home, home)
+	process, err := startDebugProcess(script, nil, home, home)
 	if err != nil {
 		t.Fatal(err)
 	}

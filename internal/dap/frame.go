@@ -161,8 +161,10 @@ func readLineLimited(reader *bufio.Reader, limit int64) (string, error) {
 }
 
 func validateWireMessage(message wireMessage) error {
-	if message.Seq <= 0 {
-		return protocolError("message seq must be positive", ErrMalformedFrame)
+	if message.Seq < 0 {
+		// lldb-dap starts its sequence at 0 (notably for the initialize
+		// response), so zero is accepted; negative sequence numbers are not.
+		return protocolError("message seq must be non-negative", ErrMalformedFrame)
 	}
 	switch message.Type {
 	case "response":

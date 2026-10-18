@@ -1,13 +1,13 @@
-# Generic DAP client (J5, used by J6)
+# Generic DAP client (J5, used by J6/J7)
 
 J5 adds an internal Debug Adapter Protocol (DAP) client shared by the GDB and
-future LLDB backends. J6 uses it for real GDB sessions through the debug tool
-surface; LLDB remains J7. The client is not callable directly over MCP: backend
-policy, target resolution and debug tools live in `internal/debugger`.
+LLDB backends. J6 uses it for real GDB sessions and J7 adds lldb-dap without
+forking the client; backend policy, target resolution and debug tools live in
+`internal/debugger`. The client is not callable directly over MCP.
 
 ```text
 internal/dap/          framing, client, state machine, capabilities, errors
-internal/dap/daptest/  reusable scripted adapter for tests (and J6)
+internal/dap/daptest/  reusable scripted adapter for tests (and J6/J7)
 ```
 
 ## Transport and framing
@@ -29,9 +29,11 @@ Content-Length: <byte length>\r\n\r\n<JSON UTF-8>
   checked before the body allocation.
 - The body is read with `io.ReadFull`; a truncated body is a protocol failure,
   not a clean EOF.
-- The JSON envelope must have a positive `seq` and a `type` of `request`,
-  `response` or `event`. Responses need a positive `request_seq`; events need a
-  name; requests need a command.
+- The JSON envelope must have a non-negative `seq` and a `type` of `request`,
+  `response` or `event`. lldb-dap starts at `seq:0` and was observed using zero
+  for every message, so zero is accepted while negative values are rejected.
+  Responses need a positive `request_seq`; events need a name; requests need a
+  command.
 - `body` is used by responses/events and `arguments` by requests. Both stay
   `json.RawMessage` until the backend decodes them.
 
@@ -75,11 +77,11 @@ and OS pipes do.
 - `RequestAsync` writes the request frame and returns a `*Future` without
   waiting for the adapter response. `Future.Wait(ctx)` retrieves the correlated
   result exactly once and caches it for later calls. This exists for adapters
-  (notably GDB) whose `launch` response only arrives after a separate
-  `configurationDone` request: the backend writes `launch`, sends
-  `configurationDone`, then awaits the launch future. An async future still
-  counts against `MaxPendingRequests` until it is awaited, cancelled or the
-  client closes.
+  whose launch response ordering is not synchronous. GDB only answers `launch`
+  after `configurationDone`; lldb-dap answers `launch` before sending the DAP
+  `initialized` event. Each backend applies its documented ordering in
+  `internal/debugger/backend.go`. An async future still counts against
+  `MaxPendingRequests` until it is awaited, cancelled or the client closes.
 
 The writer queue is bounded (32 frames by default). When it is full, `send`
 blocks until space is available or the context/Close ends the wait. Before a
@@ -116,7 +118,7 @@ terminated/cancelled/timed_out/failed -> closed
   is delivered separately; a backend may wait for it before `launch`/`attach` or
   `configurationDone`. This distinction is deliberate: adapters order the event
   and response differently.
-- `BeginLaunch` moves `initialized -> launching`; J6 calls it before sending
+- `BeginLaunch` moves `initialized -> launching`; both backends call it before sending
   `launch`/`attach`.
 - `ConfirmRunning` moves `launching -> running`, and accepts an already
   `stopped` session (stop-on-entry).
@@ -225,8 +227,8 @@ go test -fuzz=FuzzReadMessage -fuzztime=5s ./internal/dap
 ```
 
 Coverage includes fragmented headers and bodies, multiple frames per read,
-UTF-8 byte-length frames, malformed/oversized/truncated frames, missing and
-invalid envelope fields, write short-writes, out-of-order responses, late
+UTF-8 byte-length frames, zero (`lldb-dap`) and negative sequence numbers,
+malformed/oversized/truncated frames, missing and invalid envelope fields, write short-writes, out-of-order responses, late
 responses after timeout, DAP error responses, EOF and Close unblocking pending
 requests, pending limits, cancellation before send, a blocked transport,
 capability negotiation, reverse requests (success, rejection and panic), event
@@ -243,11 +245,12 @@ async cancellation and late responses, and the fuzz decoder.
 - The event channel has one consumer; `WaitForEvent` discards unmatched events.
 - Reverse handlers are cancelled but not joined; a blocking handler can outlive
   the client.
-- The client has no generic read timeout; an idle session is expected. The GDB
-  backend bounds each request and closes the transport to unblock a session.
+- The client has no generic read timeout; an idle session is expected. Both
+  backends bound each request and close the transport to unblock a session.
 - GDB 17.1 dispatches `launch` and `configurationDone` concurrently and can
   reject `configurationDone` with "launch or attach not specified" before the
-  launch state is installed. The J6 backend retries only that transient response
-  with a bounded backoff; this is an adapter quirk, not a generic DAP rule.
+  launch state is installed. The GDB backend retries only that transient response
+  with a bounded backoff; lldb-dap uses the opposite launch ordering. These are
+  adapter quirks, not generic DAP rules.
 - J5 itself launches no debugger and adds no MCP tool. The GDB backend and debug
-  tools are J6; LLDB, attach and expression evaluation remain later work.
+  tools are J6; LLDB is J7. Attach and expression evaluation remain later work.

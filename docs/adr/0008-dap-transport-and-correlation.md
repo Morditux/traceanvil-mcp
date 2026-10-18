@@ -6,11 +6,12 @@
 
 ## Context
 
-J5 introduces the DAP client that J6 (GDB) and J7 (LLDB) will share. It must
-handle real adapters over stdio: Content-Length framing, concurrent requests,
+J5 introduces the DAP client that J6 (GDB) and J7 (LLDB) share. It must handle
+real adapters over stdio: Content-Length framing, concurrent requests,
 interleaved events, reverse requests, timeouts, shutdown and capability
 negotiation. It must not assume that `launch` completes synchronously or that an
-adapter's ordering of the `initialize` response and `initialized` event is fixed.
+adapter's ordering of the `initialize` response, `initialized` event and
+`launch` response is fixed.
 
 No MCP tool is exposed at J5 and no debugger is launched yet. The client is an
 internal foundation, tested with a mock adapter and fuzz targets.
@@ -36,7 +37,7 @@ internal foundation, tested with a mock adapter and fuzz targets.
   fragments, so a single long line cannot grow an unbounded allocation.
 - The body is read with `io.ReadFull`. A truncated body is a protocol failure,
   not a clean EOF.
-- The JSON envelope must have a positive `seq` and a valid `type`. Requests use
+- The JSON envelope must have a non-negative `seq` and a valid `type`. Requests use
   `arguments`, responses and events use `body`; both remain raw until a backend
   decodes them.
 - Framing errors are `*ProtocolError` values carrying a sentinel
@@ -140,8 +141,27 @@ internal foundation, tested with a mock adapter and fuzz targets.
   or run a dedicated event loop.
 - Reverse handlers are cancelled but not joined; a handler that ignores its
   context can outlive the client.
-- `launch` was intentionally not wrapped in J5. J6 implements GDB launch,
-  `configurationDone` ordering via `RequestAsync`, breakpoints, resume/pause/step,
-  stack and variable inspection, and teardown. Attach remains later work.
+- `launch` was intentionally not wrapped in J5. J6 implements GDB launch and
+  `configurationDone` ordering via `RequestAsync`; J7 uses the same primitive for
+  lldb-dap's early launch response. Both implement breakpoints,
+  resume/pause/step, stack and variable inspection, and teardown. Attach remains
+  later work.
 - No MCP tool was added by J5. J6 adds the GDB `debug_*` tools through
-  `internal/debugger`; the DAP client itself stays internal.
+  `internal/debugger`; J7 adds LLDB without changing the MCP surface. The DAP
+  client itself stays internal.
+
+## J7 addendum
+
+lldb-dap starts its message sequence at `seq:0` and was observed using zero for
+every response and event. The envelope check therefore accepts zero and rejects
+only negative values; response `request_seq` remains positive. The client still
+requires a valid `type` and command/event-specific fields.
+
+Adapter ordering is applied by `internal/debugger`, not by the generic client:
+
+- GDB sends `initialized` before `launch` and delays the launch response until
+  `configurationDone`.
+- lldb-dap accepts `launch` before `initialized` and may answer launch first.
+
+The DAP client exposes state transitions and `RequestAsync` for both orders. It
+does not encode either adapter's ordering, preserving the J5 boundary.

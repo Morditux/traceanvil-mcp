@@ -27,6 +27,10 @@ type ToolDefinition struct {
 	// RequiredCapability must be available for the tool to be published. An
 	// empty value means the tool is always implemented and usable.
 	RequiredCapability string
+	// RequiredCapabilities is an any-of capability list for tools that can be
+	// backed by more than one implementation, such as GDB or LLDB. It is
+	// informational when Available is set.
+	RequiredCapabilities []string
 	// Add registers the tool on the MCP server.
 	Add func(*mcp.Server)
 	// Available optionally overrides RequiredCapability with a runtime check.
@@ -36,11 +40,12 @@ type ToolDefinition struct {
 
 // ToolStatus reports whether a tool is exposed and why.
 type ToolStatus struct {
-	Name               string             `json:"name"`
-	State              capabilities.State `json:"state"`
-	RequiredCapability string             `json:"required_capability,omitempty"`
-	Exposed            bool               `json:"exposed"`
-	Reason             string             `json:"reason,omitempty"`
+	Name                 string             `json:"name"`
+	State                capabilities.State `json:"state"`
+	RequiredCapability   string             `json:"required_capability,omitempty"`
+	RequiredCapabilities []string           `json:"required_capabilities,omitempty"`
+	Exposed              bool               `json:"exposed"`
+	Reason               string             `json:"reason,omitempty"`
 }
 
 // Server owns the MCP server and the conditional tool set.
@@ -81,10 +86,10 @@ func New(cfg *config.Config, caps *capabilities.Registry, info version.Info, log
 			Instructions: "Native dynamic-analysis server. system_capabilities reports build, " +
 				"policy and backend state. analysis_start runs one bounded Memcheck analysis of a " +
 				"declared target; analysis_status, analysis_report and analysis_artifact expose " +
-				"status and bounded evidence. debug_start launches a declared target under GDB over " +
-				"DAP; the other debug_* tools inspect a stopped session. Only the gdb backend is " +
-				"implemented. No arbitrary attach, expression evaluation, memory read or GDB command " +
-				"is exposed. Backend-gated tools appear only while their capability is available; " +
+				"status and bounded evidence. debug_start launches a declared target under GDB or " +
+				"LLDB over DAP; the other debug_* tools inspect a stopped session. No arbitrary " +
+				"attach, expression evaluation, memory read or debugger command is exposed. " +
+				"Backend-gated tools appear only while at least one debugger capability is available; " +
 				"never interpret incomplete evidence as a clean result.",
 			Capabilities: &mcp.ServerCapabilities{
 				Tools: &mcp.ToolCapabilities{ListChanged: true},
@@ -159,11 +164,12 @@ func (s *Server) ToolStatuses() []ToolStatus {
 	for _, def := range s.defs {
 		_, state, reason := s.toolAvailability(def)
 		statuses = append(statuses, ToolStatus{
-			Name:               def.Name,
-			State:              state,
-			RequiredCapability: def.RequiredCapability,
-			Exposed:            s.active[def.Name],
-			Reason:             reason,
+			Name:                 def.Name,
+			State:                state,
+			RequiredCapability:   def.RequiredCapability,
+			RequiredCapabilities: append([]string(nil), def.RequiredCapabilities...),
+			Exposed:              s.active[def.Name],
+			Reason:               reason,
 		})
 	}
 	return statuses
@@ -175,11 +181,30 @@ func (s *Server) toolAvailability(def ToolDefinition) (bool, capabilities.State,
 	if def.Available != nil {
 		return def.Available()
 	}
-	if def.RequiredCapability == "" {
+	if def.RequiredCapability == "" && len(def.RequiredCapabilities) == 0 {
 		return true, capabilities.StateAvailable, "implemented and enabled"
 	}
 	if s.caps == nil {
 		return false, capabilities.StateUnknown, "capability registry is unavailable"
+	}
+	if len(def.RequiredCapabilities) > 0 {
+		state := capabilities.StateUnknown
+		reason := "no required capability is registered"
+		for _, id := range def.RequiredCapabilities {
+			record, ok := s.caps.Get(id)
+			if !ok {
+				continue
+			}
+			if record.State == capabilities.StateAvailable {
+				return true, record.State, record.Reason
+			}
+			state = record.State
+			reason = record.Reason
+			if reason == "" {
+				reason = id + " is " + string(record.State)
+			}
+		}
+		return false, state, reason
 	}
 
 	record, ok := s.caps.Get(def.RequiredCapability)

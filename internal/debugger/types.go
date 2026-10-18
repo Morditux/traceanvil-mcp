@@ -1,13 +1,16 @@
-// Package debugger owns interactive debugger sessions. J6 implements a GDB DAP
-// backend; the session manager and API are backend-neutral so LLDB can be added
-// without changing the MCP contract.
+// Package debugger owns interactive debugger sessions. J6 implements the GDB
+// DAP backend and J7 adds LLDB through the same backend-neutral session manager
+// and MCP contract.
 package debugger
 
 // APISchemaVersion versions the debug_* payloads.
 const APISchemaVersion = 1
 
-// BackendGDB is the only debugger backend implemented at J6.
-const BackendGDB = "gdb"
+// Supported debugger backends. Both use the generic DAP session.
+const (
+	BackendGDB  = "gdb"
+	BackendLLDB = "lldb"
+)
 
 // State is the session lifecycle exposed by the debugger API. It is separate
 // from a process exit status and from any diagnostic conclusion.
@@ -85,7 +88,7 @@ type Status struct {
 // subset of the configured target's allowed_args.
 type StartRequest struct {
 	TargetID    string   `json:"target_id" jsonschema:"declared target id; never a filesystem path"`
-	Backend     string   `json:"backend,omitempty" jsonschema:"debugger backend; only gdb is implemented"`
+	Backend     string   `json:"backend,omitempty" jsonschema:"debugger backend: gdb (default when usable) or lldb"`
 	Args        []string `json:"args,omitempty" jsonschema:"program arguments; each must be declared in the target's allowed_args"`
 	StopOnEntry *bool    `json:"stop_on_entry,omitempty" jsonschema:"stop at the process entry point before running (default true)"`
 }
@@ -138,7 +141,7 @@ type StepRequest struct {
 // PauseRequest is the input of debug_pause.
 type PauseRequest struct {
 	SessionID string `json:"session_id" jsonschema:"opaque session id returned by debug_start"`
-	ThreadID  int    `json:"thread_id,omitempty" jsonschema:"thread to pause; defaults to the first thread reported by the adapter"`
+	ThreadID  int    `json:"thread_id,omitempty" jsonschema:"thread to pause; defaults to the adapter-reported thread or process id"`
 }
 
 // ActionResult acknowledges a resume or pause request. debug_continue is
@@ -202,7 +205,7 @@ type Source struct {
 }
 
 // Frame is one debugger stack frame. Instruction pointers and raw memory
-// references are intentionally not exposed at J6.
+// references are intentionally not exposed at J6/J7.
 type Frame struct {
 	ID     int     `json:"id"`
 	Name   string  `json:"name,omitempty"`
@@ -287,11 +290,11 @@ type VariablesResult struct {
 }
 
 // StopRequest is the input of debug_stop. Terminate defaults to true: the
-// server terminates the debuggee it started. J6 does not implement detach;
+// server terminates the debuggee it started. Detach is not implemented in J6/J7;
 // setting it to false is refused rather than reported as successful.
 type StopRequest struct {
 	SessionID string `json:"session_id" jsonschema:"opaque session id returned by debug_start"`
-	Terminate *bool  `json:"terminate,omitempty" jsonschema:"terminate the debuggee (default true); false is refused at J6 because detach is not implemented"`
+	Terminate *bool  `json:"terminate,omitempty" jsonschema:"terminate the debuggee (default true); false is refused because detach is not implemented"`
 }
 
 // StopResult is the output of debug_stop.

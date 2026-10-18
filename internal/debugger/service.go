@@ -12,16 +12,22 @@ import (
 	"github.com/Morditux/traceanvil-mcp/internal/policy"
 )
 
-// ServiceOptions wires the debugger API to policy, configuration and the DAP
-// backend. BinaryProvider and BackendAvailable are called at every start, so a
+// BackendOptions wires one debugger backend to its executable and capability
+// state. BinaryProvider and Available are called at every start, so a
 // capability removed after discovery is not silently used.
+type BackendOptions struct {
+	Enabled        bool
+	BinaryProvider func() (path, version string, err error)
+	Available      func() (bool, string)
+}
+
+// ServiceOptions wires the debugger API to policy, configuration and the
+// enabled backends.
 type ServiceOptions struct {
-	Resolver         *policy.Resolver
-	Roots            []string
-	BinaryProvider   func() (path, version string, err error)
-	BackendEnabled   bool
-	BackendAvailable func() (bool, string)
-	Logger           *slog.Logger
+	Resolver *policy.Resolver
+	Roots    []string
+	Backends map[string]BackendOptions
+	Logger   *slog.Logger
 
 	MaxSessions      int
 	IdleTimeout      time.Duration
@@ -32,24 +38,22 @@ type ServiceOptions struct {
 	StartupTimeout   time.Duration
 	StopTimeout      time.Duration
 
-	// Starter is injectable for tests. Production uses startGDBSession.
-	Starter func(context.Context, gdbSessionOptions) (Session, error)
+	// Starter is injectable for tests. Production uses startSession.
+	Starter func(context.Context, sessionOptions) (Session, error)
 }
 
 // Service is the debugger business API. MCP handlers only delegate here.
 type Service struct {
 	resolver       *policy.Resolver
 	roots          []string
-	binaryProvider func() (string, string, error)
-	enabled        bool
-	available      func() (bool, string)
+	backends       map[string]BackendOptions
 	logger         *slog.Logger
 	manager        *Manager
 	maxItems       int
 	requestTimeout time.Duration
 	startupTimeout time.Duration
 	stopTimeout    time.Duration
-	starter        func(context.Context, gdbSessionOptions) (Session, error)
+	starter        func(context.Context, sessionOptions) (Session, error)
 }
 
 const (
@@ -65,8 +69,16 @@ func NewService(opts ServiceOptions) (*Service, error) {
 	if opts.Resolver == nil {
 		return nil, errors.New("debugger: nil policy resolver")
 	}
-	if opts.BinaryProvider == nil {
-		return nil, errors.New("debugger: nil binary provider")
+	if len(opts.Backends) == 0 {
+		return nil, errors.New("debugger: no backends configured")
+	}
+	for name, backend := range opts.Backends {
+		if _, err := backendSpecFor(name); err != nil {
+			return nil, err
+		}
+		if backend.Enabled && backend.BinaryProvider == nil {
+			return nil, fmt.Errorf("debugger: backend %q is enabled without a binary provider", name)
+		}
 	}
 	if opts.MaxResponseItems <= 0 {
 		opts.MaxResponseItems = defaultMaxResponseItems
@@ -89,14 +101,16 @@ func NewService(opts ServiceOptions) (*Service, error) {
 
 	starter := opts.Starter
 	if starter == nil {
-		starter = startGDBSession
+		starter = startSession
+	}
+	backends := make(map[string]BackendOptions, len(opts.Backends))
+	for name, backend := range opts.Backends {
+		backends[name] = backend
 	}
 	return &Service{
 		resolver:       opts.Resolver,
 		roots:          append([]string(nil), opts.Roots...),
-		binaryProvider: opts.BinaryProvider,
-		enabled:        opts.BackendEnabled,
-		available:      opts.BackendAvailable,
+		backends:       backends,
 		logger:         logger,
 		manager:        manager,
 		maxItems:       opts.MaxResponseItems,
@@ -115,8 +129,8 @@ func (s *Service) Close() {
 	s.manager.Close()
 }
 
-// Start validates one declared target, revalidates the GDB backend and launches
-// an asynchronous debug session.
+// Start validates one declared target, revalidates the selected backend and
+// launches an asynchronous debug session.
 func (s *Service) Start(ctx context.Context, req StartRequest) (Status, error) {
 	if s == nil || s.manager == nil {
 		return Status{}, Errorf(CodeClosed, "debugger service is not configured")
@@ -133,14 +147,8 @@ func (s *Service) Start(ctx context.Context, req StartRequest) (Status, error) {
 	if req.TargetID == "" {
 		return Status{}, Errorf(CodeInvalidArgument, "target_id must not be empty")
 	}
-	backend := req.Backend
-	if backend == "" {
-		backend = BackendGDB
-	}
-	if backend != BackendGDB {
-		return Status{}, Errorf(CodeUnsupported, "backend %q is not implemented; only gdb is available at J6", backend)
-	}
-	if err := s.checkBackend(); err != nil {
+	backend, backendOptions, err := s.selectBackend(req.Backend)
+	if err != nil {
 		return Status{}, err
 	}
 
@@ -156,12 +164,12 @@ func (s *Service) Start(ctx context.Context, req StartRequest) (Status, error) {
 		return Status{}, Wrap(CodePolicyDenied, err, "target %q was denied by policy", req.TargetID)
 	}
 
-	binary, version, err := s.binaryProvider()
+	binary, version, err := backendOptions.BinaryProvider()
 	if err != nil {
-		return Status{}, Wrap(CodeBackendUnavailable, err, "gdb backend is unavailable")
+		return Status{}, Wrap(CodeBackendUnavailable, err, "%s backend is unavailable", backend)
 	}
 	if err := validateDebuggerBinary(binary); err != nil {
-		return Status{}, Wrap(CodeBackendUnavailable, err, "gdb backend is not usable")
+		return Status{}, Wrap(CodeBackendUnavailable, err, "%s backend is not usable", backend)
 	}
 
 	stopOnEntry := true
@@ -170,9 +178,10 @@ func (s *Service) Start(ctx context.Context, req StartRequest) (Status, error) {
 	}
 
 	session, err := s.manager.Start(ctx, func(startCtx context.Context, id string) (Session, error) {
-		return s.starter(startCtx, gdbSessionOptions{
+		return s.starter(startCtx, sessionOptions{
 			ID:             id,
 			TargetID:       resolved.TargetID,
+			Backend:        backend,
 			Program:        resolved.Program,
 			Dir:            resolved.Dir,
 			Binary:         binary,
@@ -374,20 +383,49 @@ func (s *Service) session(sessionID string) (Session, error) {
 	return session, nil
 }
 
-func (s *Service) checkBackend() error {
-	if !s.enabled {
-		return Errorf(CodeBackendDisabled, "the gdb backend is disabled by configuration")
+// selectBackend applies the gdb default when the request omits a backend. If
+// gdb is configured but unusable, it falls back to lldb so a published
+// debug_start remains usable in an LLDB-only configuration. An explicit
+// backend is never silently replaced.
+func (s *Service) selectBackend(requested string) (string, BackendOptions, error) {
+	if requested != "" {
+		options, err := s.checkBackend(requested)
+		return requested, options, err
 	}
-	if s.available != nil {
-		ok, reason := s.available()
+	options, err := s.checkBackend(BackendGDB)
+	if err == nil {
+		return BackendGDB, options, nil
+	}
+	if lldbOptions, lldbErr := s.checkBackend(BackendLLDB); lldbErr == nil {
+		return BackendLLDB, lldbOptions, nil
+	}
+	return BackendGDB, BackendOptions{}, err
+}
+
+func (s *Service) checkBackend(backend string) (BackendOptions, error) {
+	options, ok := s.backends[backend]
+	if !ok {
+		return BackendOptions{}, Errorf(CodeUnsupported,
+			"backend %q is not configured", backend)
+	}
+	if !options.Enabled {
+		return BackendOptions{}, Errorf(CodeBackendDisabled,
+			"the %s backend is disabled by configuration", backend)
+	}
+	if options.Available != nil {
+		ok, reason := options.Available()
 		if !ok {
 			if reason == "" {
-				reason = "gdb is unavailable"
+				reason = backend + " is unavailable"
 			}
-			return Errorf(CodeBackendUnavailable, "%s", reason)
+			return BackendOptions{}, Errorf(CodeBackendUnavailable, "%s", reason)
 		}
 	}
-	return nil
+	if options.BinaryProvider == nil {
+		return BackendOptions{}, Errorf(CodeBackendUnavailable,
+			"the %s backend has no executable provider", backend)
+	}
+	return options, nil
 }
 
 func validateDebuggerBinary(path string) error {

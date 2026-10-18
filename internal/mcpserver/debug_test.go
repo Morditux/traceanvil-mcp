@@ -359,3 +359,73 @@ func TestDebugToolsCallAndNamedErrors(t *testing.T) {
 		t.Errorf("tool error text = %q, want backend_unavailable", text)
 	}
 }
+
+func availableLLDB(t *testing.T, registry *capabilities.Registry) {
+	t.Helper()
+	if err := registry.Set(capabilities.Capability{
+		ID:      capabilities.BackendLLDB,
+		Kind:    "backend",
+		Backend: "lldb",
+		State:   capabilities.StateAvailable,
+		Path:    "/usr/bin/lldb-dap",
+		Version: "lldb-dap test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDebugToolsPublishForLLDBOnly(t *testing.T) {
+	registry := capabilities.NewRegistry(nil, time.Second)
+	if err := registry.Set(capabilities.Capability{
+		ID: capabilities.BackendGDB, Kind: "backend", Backend: "gdb",
+		State: capabilities.StateUnavailable, Reason: "gdb not installed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	availableLLDB(t, registry)
+	service := &fakeDebugService{
+		targets: true,
+		status: debugger.Status{
+			SchemaVersion: debugger.APISchemaVersion,
+			SessionID:     "dbg_000000000000000000000000000000bb",
+			Backend:       debugger.BackendLLDB,
+			TargetID:      "fixture",
+			State:         debugger.StateStopped,
+		},
+	}
+	server := New(testConfig(), registry, version.Current(), nil)
+	for _, definition := range DebugDefinitions(service, registry) {
+		if err := server.Register(definition); err != nil {
+			t.Fatal(err)
+		}
+	}
+	server.SyncTools()
+	session, ctx := connect(t, server, nil)
+	names := listToolNames(t, session, ctx)
+	for _, want := range DebugToolNames() {
+		if !contains(names, want) {
+			t.Errorf("tools = %v, missing %q with LLDB available", names, want)
+		}
+	}
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{
+		Name: "debug_start", Arguments: map[string]any{"target_id": "fixture", "backend": "lldb"},
+	})
+	if err != nil || result.IsError {
+		t.Fatalf("debug_start(lldb) = %+v, %v", result, err)
+	}
+	service.mu.Lock()
+	backend := service.lastStart.Backend
+	service.mu.Unlock()
+	if backend != "lldb" {
+		t.Errorf("debug_start backend = %q", backend)
+	}
+	for _, status := range server.ToolStatuses() {
+		if status.Name == "debug_start" {
+			if len(status.RequiredCapabilities) != 2 ||
+				status.RequiredCapabilities[0] != capabilities.BackendGDB ||
+				status.RequiredCapabilities[1] != capabilities.BackendLLDB {
+				t.Errorf("debug_start required_capabilities = %v", status.RequiredCapabilities)
+			}
+		}
+	}
+}

@@ -11,10 +11,12 @@ import (
 	"github.com/Morditux/traceanvil-mcp/internal/dap/daptest"
 )
 
-func minimalSession() *gdbSession {
-	return &gdbSession{
+func minimalSession() *dapSession {
+	spec, _ := backendSpecFor(BackendGDB)
+	return &dapSession{
 		id:       "dbg_00000000000000000000000000000000",
 		targetID: "fixture",
+		backend:  spec,
 		state:    StateRunning,
 		changed:  make(chan struct{}),
 		done:     make(chan struct{}),
@@ -54,6 +56,18 @@ func TestGDBPauseWhileStoppedAndTerminalErrors(t *testing.T) {
 	session.state = StateTerminated
 	if _, err := session.Threads(context.Background(), ThreadsRequest{}); CodeOf(err) != CodeSessionTerminated {
 		t.Errorf("Threads terminated error = %v, want session_terminated", err)
+	}
+}
+
+func TestLateContinuedDoesNotClearNewerStop(t *testing.T) {
+	session := minimalSession()
+	session.state = StateStopped
+	session.stopGen = 2
+	session.stop = &Stop{Reason: "breakpoint", ThreadID: 7}
+	session.handleEvent(dap.Event{Name: "continued"})
+	if session.state != StateStopped || session.stopGen != 2 || session.stop == nil {
+		t.Fatalf("late continued cleared the stop: state=%q gen=%d stop=%+v",
+			session.state, session.stopGen, session.stop)
 	}
 }
 
@@ -169,7 +183,7 @@ func TestGDBStaleGenerationRejected(t *testing.T) {
 	}
 }
 
-func mockDAPSession(t *testing.T) (*gdbSession, *daptest.Adapter) {
+func mockDAPSession(t *testing.T) (*dapSession, *daptest.Adapter) {
 	t.Helper()
 	conn, adapter := daptest.NewPair()
 	adapter.Handle("initialize", func(daptest.Request) *daptest.Payload {
@@ -232,13 +246,10 @@ func TestGDBResumeDAPErrorRestoresStopped(t *testing.T) {
 }
 
 func TestGDBVerifyHardeningFailsClosed(t *testing.T) {
-	session := minimalSession()
-	session.proc = &gdbProcess{stderr: newTailBuffer(1024)}
-	if err := session.verifyHardening(); err != nil {
-		t.Fatalf("verifyHardening(clean) error = %v", err)
+	if err := ValidateGDBHardening(""); err != nil {
+		t.Fatalf("ValidateGDBHardening(clean) error = %v", err)
 	}
-	_, _ = session.proc.stderr.Write([]byte("Undefined set command: debuginfod enabled\n"))
-	if err := session.verifyHardening(); err == nil {
-		t.Fatal("verifyHardening accepted a rejected hardening command")
+	if err := ValidateGDBHardening("Undefined set command: debuginfod enabled\n"); err == nil {
+		t.Fatal("ValidateGDBHardening accepted a rejected hardening command")
 	}
 }

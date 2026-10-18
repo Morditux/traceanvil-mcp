@@ -36,8 +36,20 @@ int main(void) {
 `
 
 func TestServeGDBDebugWorkflow(t *testing.T) {
-	if _, err := exec.LookPath("gdb"); err != nil {
-		t.Skip("gdb is not installed; skipping the debug workflow")
+	runServeDebugWorkflow(t, "gdb")
+}
+
+func TestServeLLDBDebugWorkflow(t *testing.T) {
+	runServeDebugWorkflow(t, "lldb")
+}
+
+func runServeDebugWorkflow(t *testing.T, backend string) {
+	debuggerBinary := "gdb"
+	if backend == "lldb" {
+		debuggerBinary = "lldb-dap"
+	}
+	if _, err := exec.LookPath(debuggerBinary); err != nil {
+		t.Skipf("%s is not installed; skipping the debug workflow", debuggerBinary)
 	}
 	cc, err := exec.LookPath("cc")
 	if err != nil {
@@ -55,7 +67,7 @@ func TestServeGDBDebugWorkflow(t *testing.T) {
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("compile fixture: %v\n%s", err, output)
 	}
-	configPath := writeDebugConfig(t, root, program)
+	configPath := writeDebugConfig(t, root, program, backend)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -94,14 +106,15 @@ func TestServeGDBDebugWorkflow(t *testing.T) {
 	capResult := callTool(t, ctx, session, "system_capabilities", map[string]any{})
 	var report mcpserver.Report
 	decodeStructured(t, capResult, &report)
-	gdbAvailable := false
+	capabilityID := "backend." + backend
+	backendAvailable := false
 	for _, capability := range report.Capabilities {
-		if capability.ID == "backend.gdb" && capability.State == "available" {
-			gdbAvailable = true
+		if capability.ID == capabilityID && capability.State == "available" {
+			backendAvailable = true
 		}
 	}
-	if !gdbAvailable {
-		t.Fatalf("system_capabilities does not report backend.gdb as available: %+v", report.Capabilities)
+	if !backendAvailable {
+		t.Fatalf("system_capabilities does not report %s as available: %+v", capabilityID, report.Capabilities)
 	}
 	startExposed := false
 	for _, tool := range report.Tools {
@@ -131,16 +144,20 @@ func TestServeGDBDebugWorkflow(t *testing.T) {
 		}
 	}
 
-	startResult := callTool(t, ctx, session, "debug_start", map[string]any{
-		"target_id": "fixture",
-	})
+	startArguments := map[string]any{"target_id": "fixture"}
+	if backend == "gdb" {
+		// Keep the explicit GDB path covered; LLDB omits backend to exercise
+		// the documented fallback when GDB is disabled.
+		startArguments["backend"] = "gdb"
+	}
+	startResult := callTool(t, ctx, session, "debug_start", startArguments)
 	var started debugger.Status
 	decodeStructured(t, startResult, &started)
 	if started.State != debugger.StateStopped || started.StopGeneration != 1 {
 		t.Fatalf("debug_start status = %+v", started)
 	}
-	if started.Backend != debugger.BackendGDB {
-		t.Errorf("backend = %q", started.Backend)
+	if started.Backend != backend {
+		t.Errorf("backend = %q, want %q", started.Backend, backend)
 	}
 
 	bpResult := callTool(t, ctx, session, "debug_set_breakpoints", map[string]any{
@@ -253,7 +270,7 @@ func TestServeGDBDebugWorkflow(t *testing.T) {
 	}
 }
 
-func writeDebugConfig(t *testing.T, root, program string) string {
+func writeDebugConfig(t *testing.T, root, program, backend string) string {
 	t.Helper()
 	reportDir := filepath.Join(t.TempDir(), "reports")
 	doc := fmt.Sprintf(`{
@@ -263,10 +280,10 @@ func writeDebugConfig(t *testing.T, root, program string) string {
 		"allowed_targets": [
 			{"id": "fixture", "program": %q, "cwd": %q, "allowed_args": []}
 		],
-		"backends": {"valgrind": false, "gdb": true, "lldb": false},
+		"backends": {"valgrind": false, "gdb": %t, "lldb": %t},
 		"policy": {"profile": "safe-default", "attach": false, "evaluate": false},
 		"limits": {"timeout_seconds": 60, "max_jobs": 1, "max_sessions": 2, "max_response_items": 100}
-	}`, config.SchemaVersion, root, reportDir, program, root)
+	}`, config.SchemaVersion, root, reportDir, program, root, backend == "gdb", backend == "lldb")
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
 		t.Fatal(err)

@@ -173,7 +173,7 @@ func TestReadMessageErrors(t *testing.T) {
 		{name: "invalid json", data: "Content-Length: 3\r\n\r\n{{{", want: ErrMalformedFrame},
 		{name: "missing type", data: frame(`{"seq":1}`), want: ErrMalformedFrame},
 		{name: "invalid type", data: frame(`{"seq":1,"type":"bogus"}`), want: ErrMalformedFrame},
-		{name: "zero seq", data: frame(`{"seq":0,"type":"event","event":"initialized"}`), want: ErrMalformedFrame},
+		{name: "negative seq", data: frame(`{"seq":-1,"type":"event","event":"initialized"}`), want: ErrMalformedFrame},
 		{name: "response without request seq", data: frame(`{"seq":1,"type":"response","success":true,"command":"x"}`), want: ErrMalformedFrame},
 		{name: "event without name", data: frame(`{"seq":1,"type":"event"}`), want: ErrMalformedFrame},
 		{name: "request without command", data: frame(`{"seq":1,"type":"request"}`), want: ErrMalformedFrame},
@@ -273,3 +273,13 @@ func (zeroWriter) Write([]byte) (int, error) { return 0, nil }
 type errorWriter struct{}
 
 func (errorWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
+
+func TestReadMessageAcceptsZeroSequenceFromLLDB(t *testing.T) {
+	message, err := readFrame(t, frame(`{"seq":0,"type":"event","event":"initialized"}`), 1024, 4096)
+	if err != nil {
+		t.Fatalf("readMessage() error = %v", err)
+	}
+	if message.Seq != 0 || message.Event != "initialized" {
+		t.Fatalf("message = %+v", message)
+	}
+}
