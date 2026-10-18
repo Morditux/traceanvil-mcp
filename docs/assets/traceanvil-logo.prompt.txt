@@ -1,0 +1,7 @@
+Use case: logo-brand
+Asset type: repository README logo for TraceAnvil MCP, a local native diagnostics developer tool.
+Primary request: Create a polished standalone emblem combining a recognizable blacksmith anvil silhouette with a precise execution-trace line integrated into its face. The concept is forging reliable diagnostics from native program traces.
+Style/medium: crisp flat vector-style brand mark, restrained professional developer-tool identity, bold simple shapes readable at 160px.
+Composition/framing: one centered compact emblem on a square transparent canvas, generous clean margin. No wordmark or letters.
+Color palette: deep navy anvil with a vivid amber trace and subtle teal accent; clear silhouette readable on light and dark README backgrounds.
+Constraints: genuine transparent background, no shadows, no glow, no mockup, no border, no watermark, no gradients, no text.
