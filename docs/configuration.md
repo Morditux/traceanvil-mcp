@@ -66,10 +66,12 @@ arguments. Arguments are always passed as a list, never through a shell.
 {"valgrind": true, "gdb": true, "lldb": false}
 ```
 
-Enabling a backend allows probing and, in later milestones, tool exposure. It
-never installs software. At J3, Valgrind is functionally probed; GDB and LLDB
-remain discovery-only and `unknown` until their DAP probes land. No Memcheck
-tool is exposed yet: the pipeline is internal until J4.
+Enabling a backend allows probing and tool exposure. It never installs software.
+Valgrind is functionally probed for Memcheck XML support; `analysis_start` is
+published only while `backend.valgrind` is `available`. GDB and LLDB remain
+discovery-only and `unknown` until their DAP probes land (J6/J7). The evidence
+tools (`analysis_status`, `analysis_cancel`, `analysis_report`,
+`analysis_artifact`) stay published so an existing run remains queryable.
 
 ### `valgrind`
 
@@ -81,7 +83,8 @@ tool is exposed yet: the pipeline is internal until J4.
 |---|---|---|
 | `suppressions` | object | At most 32 entries. Keys match `^[a-z0-9][a-z0-9._-]{0,63}$`. |
 
-A suppression profile id may be selected by a J4 analysis request. Values are
+A suppression profile id may be selected by an analysis request
+(`options.suppressions_profile`). Values are
 absolute paths inside `workspace_roots`, at most 1 MiB. They need not exist at
 validation time; at invocation the path is resolved with `EvalSymlinks`,
 revalidated inside the roots, checked as a regular file, opened with
@@ -100,7 +103,7 @@ as resolved. See [valgrind.md](valgrind.md#suppressions).
 | `evaluate` | boolean | `false` | Requires `elevated-local`. |
 
 `elevated-local` is accepted by validation but its features are **not
-implemented** at J3; `doctor` warns about it. `attach` and `evaluate` are never
+implemented** yet; `doctor` warns about it. `attach` and `evaluate` are never
 exposed by the default profile.
 
 ### `limits`
@@ -114,8 +117,19 @@ exposed by the default profile.
 | `max_response_items` | `100` | `1` | `10000` |
 
 Zero or an omitted limit selects the default. Negative values and values above
-the maximum are rejected. The runner and job manager enforce the execution
-limits; response/report limits are wired by J4.
+the maximum are rejected.
+
+- `timeout_seconds` is both the default and the maximum job timeout. An
+  `analysis_start.timeout_ms` request may only shorten it; a longer value is
+  rejected with `invalid_argument`.
+- `max_jobs` bounds concurrent analyses; the next request is rejected with
+  `quota_exceeded`.
+- `max_report_bytes` is the per-run artifact budget (raw XML, logs, manifest and
+  normalized report). The API read bound is `min(max_report_bytes, 64 MiB)`.
+- `max_response_items` bounds list/response cardinality. Diagnostic pages use
+  `min(max_response_items, 500)` items and default to 50; the effective cap is
+  reported as `limits.max_page_items` in `system_capabilities`.
+- `max_sessions` is reserved for the debugger session manager (J6).
 
 ## Capability probing
 
@@ -125,10 +139,11 @@ entries are rejected. Probing is bounded (2 seconds per probe, concurrently),
 uses a minimal fixed environment (`PATH`, `LC_ALL=C`) and never runs a user
 program.
 
-At J3 the Valgrind backend is functionally probed; GDB and LLDB remain
-discovery-only:
+Probes run at startup and again every 30 seconds, independently of tool calls.
+A capability change reconciles `tools/list` and emits
+`notifications/tools/list_changed`. Probes never run a user program.
 
-| Backend | Executable | State at J3 |
+| Backend | Executable | State now |
 |---|---|---|
 | Valgrind | `valgrind` | `available` when `--version` and `--tool=memcheck --help` verify Memcheck XML support |
 | GDB | `gdb` | `unknown` until the J6 DAP probe |
@@ -138,9 +153,9 @@ The Valgrind probe runs only `--version` and `--tool=memcheck --help` with a
 short timeout and `LC_ALL=C`; it never runs a user program and never uses sudo.
 A discovered GDB/LLDB binary is still reported as `unknown`, not `available`,
 because a binary on `PATH` does not prove that DAP works. Every Memcheck run
-revalidates the Valgrind binary. A missing binary at start is a typed backend
-error; a binary that disappears before `exec` produces a `tool_error` report,
-never "no errors".
+revalidates the Valgrind binary. A missing binary at start is a typed
+`backend_unavailable` error; a binary that disappears before `exec` produces a
+`tool_error` report, never "no errors".
 
 `lldb-dap` is resolved but not executed, because its `--version` behaviour is
 not guaranteed to terminate. Versioned adapter names (`lldb-dap-XX`) are not

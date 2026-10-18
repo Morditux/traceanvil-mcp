@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -45,8 +47,23 @@ func TestServeInProcess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools() error = %v", err)
 	}
-	if len(tools.Tools) != 1 || tools.Tools[0].Name != "system_capabilities" {
-		t.Fatalf("tools = %d, want only system_capabilities", len(tools.Tools))
+	names := make(map[string]bool, len(tools.Tools))
+	for _, tool := range tools.Tools {
+		names[tool.Name] = true
+	}
+	for _, want := range []string{
+		"system_capabilities",
+		"analysis_status",
+		"analysis_cancel",
+		"analysis_report",
+		"analysis_artifact",
+	} {
+		if !names[want] {
+			t.Errorf("tools = %v, missing %q", names, want)
+		}
+	}
+	if names["analysis_start"] {
+		t.Error("analysis_start is published with the valgrind backend disabled")
 	}
 
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
@@ -188,4 +205,32 @@ func (b *lockedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
+}
+
+func TestRunCapabilityRefresh(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var calls atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runCapabilityRefresh(ctx, 5*time.Millisecond, func(context.Context) ([]string, []string) {
+			calls.Add(1)
+			return nil, nil
+		}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for calls.Load() < 3 {
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("refresh calls = %d, want at least 3", calls.Load())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runCapabilityRefresh did not stop after cancellation")
+	}
 }

@@ -109,7 +109,7 @@ func (o *Options) Validate() error {
 	}
 
 	if o.TraceChildren {
-		return &OptionError{Field: "trace_children", Reason: "is not supported in J3 (separate child XML documents are not aggregated)"}
+		return &OptionError{Field: "trace_children", Reason: "is not supported (separate child XML documents are not aggregated)"}
 	}
 	if strings.ContainsRune(o.SuppressionsProfile, 0) {
 		return &OptionError{Field: "suppressions_profile", Reason: "must not contain NUL"}

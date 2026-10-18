@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"github.com/Morditux/traceanvil-mcp/internal/analysis"
 	"github.com/Morditux/traceanvil-mcp/internal/capabilities"
 	"github.com/Morditux/traceanvil-mcp/internal/config"
 	"github.com/Morditux/traceanvil-mcp/internal/version"
@@ -36,11 +37,14 @@ type PolicyInfo struct {
 
 // LimitsInfo is the effective bounded-execution configuration.
 type LimitsInfo struct {
-	TimeoutSeconds   int   `json:"timeout_seconds"`
-	MaxJobs          int   `json:"max_jobs"`
-	MaxSessions      int   `json:"max_sessions"`
-	MaxReportBytes   int64 `json:"max_report_bytes"`
-	MaxResponseItems int   `json:"max_response_items"`
+	TimeoutSeconds       int   `json:"timeout_seconds"`
+	MaxJobs              int   `json:"max_jobs"`
+	MaxSessions          int   `json:"max_sessions"`
+	MaxReportBytes       int64 `json:"max_report_bytes"`
+	MaxResponseItems     int   `json:"max_response_items"`
+	MaxPageItems         int   `json:"max_page_items"`
+	DefaultArtifactBytes int   `json:"default_artifact_bytes"`
+	MaxArtifactBytes     int   `json:"max_artifact_bytes"`
 }
 
 // BuildReport assembles the current capability view. It reads the registry
@@ -66,11 +70,14 @@ func (s *Server) BuildReport() Report {
 			Evaluate: s.cfg.Policy.Evaluate,
 		}
 		report.Limits = LimitsInfo{
-			TimeoutSeconds:   s.cfg.Limits.TimeoutSeconds,
-			MaxJobs:          s.cfg.Limits.MaxJobs,
-			MaxSessions:      s.cfg.Limits.MaxSessions,
-			MaxReportBytes:   s.cfg.Limits.MaxReportBytes,
-			MaxResponseItems: s.cfg.Limits.MaxResponseItems,
+			TimeoutSeconds:       s.cfg.Limits.TimeoutSeconds,
+			MaxJobs:              s.cfg.Limits.MaxJobs,
+			MaxSessions:          s.cfg.Limits.MaxSessions,
+			MaxReportBytes:       s.cfg.Limits.MaxReportBytes,
+			MaxResponseItems:     s.cfg.Limits.MaxResponseItems,
+			MaxPageItems:         min(analysis.MaxPageItems, s.cfg.Limits.MaxResponseItems),
+			DefaultArtifactBytes: analysis.DefaultMaxArtifactBytes,
+			MaxArtifactBytes:     analysis.MaxArtifactBytes,
 		}
 	}
 
@@ -89,9 +96,11 @@ func (s *Server) BuildReport() Report {
 
 func (s *Server) warnings() []string {
 	warnings := []string{
-		"Only system_capabilities is implemented at this milestone; analysis tools arrive with J4.",
-		"Valgrind is functionally probed for Memcheck XML support; GDB and LLDB remain discovery-only (J6/J7).",
-		"Capability probes run at startup only; restart the server after installing or removing a backend.",
+		"Memcheck is the only implemented analysis tool; GDB and LLDB remain discovery-only (J6/J7).",
+		"analysis_start is published only while backend.valgrind is available; analysis_status, analysis_report and analysis_artifact remain available for existing runs.",
+		"Capability probes run at startup and periodically; tools/list_changed is emitted when tool availability changes.",
+		"Diagnostics are tool-reported. analysis_complete=false means the evidence is partial; a zero count is not evidence of absence.",
+		"Report pages and artifact excerpts are bounded; omitted data is reported explicitly and never treated as absent.",
 	}
 
 	if s.cfg == nil {

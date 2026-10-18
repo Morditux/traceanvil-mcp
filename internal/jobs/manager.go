@@ -14,7 +14,8 @@ import (
 	"github.com/Morditux/traceanvil-mcp/internal/runner"
 )
 
-const manifestName = "result.json"
+// ManifestName is the job manifest file written inside every run directory.
+const ManifestName = "result.json"
 
 const manifestReserve int64 = 64 << 10
 
@@ -187,6 +188,9 @@ func validateStart(ctx context.Context, spec Spec) error {
 	if !filepath.IsAbs(spec.Dir) {
 		return errors.New("jobs: working directory must be an absolute path")
 	}
+	if spec.Timeout < 0 {
+		return errors.New("jobs: timeout must not be negative")
+	}
 	return nil
 }
 
@@ -265,12 +269,18 @@ func (m *Manager) execute(job *Job, runDir *artifacts.RunDir, spec Spec) {
 		return
 	}
 
+	timeout := m.opts.Timeout
+	if spec.Timeout > 0 && spec.Timeout < timeout {
+		// A per-job timeout may only shorten the manager-wide limit.
+		timeout = spec.Timeout
+	}
+
 	runResult, runErr := m.runner.Run(job.context(), runner.Request{
 		Executable:     spec.Executable,
 		Args:           append([]string(nil), spec.Args...),
 		Dir:            spec.Dir,
 		Env:            environmentWithTmpDir(spec.Env, runDir.Path()),
-		Timeout:        m.opts.Timeout,
+		Timeout:        timeout,
 		MaxOutputBytes: m.opts.MaxOutputBytes,
 		Stdout:         stdout,
 		Stderr:         stderr,
@@ -327,7 +337,7 @@ func (m *Manager) finalize(job *Job, runDir *artifacts.RunDir, state State, resu
 	if marshalErr != nil {
 		state = StateFailed
 		errText = truncate("marshal result manifest: "+marshalErr.Error(), 4096)
-	} else if writeErr := runDir.WriteFileAtomic(manifestName, data); writeErr != nil {
+	} else if writeErr := runDir.WriteFileAtomic(ManifestName, data); writeErr != nil {
 		// The program outcome is still valid; report that the evidence on disk
 		// is missing instead of rewriting the outcome.
 		note := truncate("result manifest not persisted: "+writeErr.Error(), 4096)

@@ -1,11 +1,12 @@
-# Valgrind Memcheck pipeline (J3)
+# Valgrind Memcheck pipeline (J3/J4)
 
-J3 adds an internal, end-to-end Memcheck pipeline: an allowlisted target is run
-under Valgrind in XML mode, the raw XML is preserved as evidence, and a
-canonical report is written next to it. **No MCP tool exposes this pipeline
-yet.** `analysis_start`, `analysis_status`, `analysis_report` and
-`analysis_artifact` arrive with J4. The public MCP surface at J3 is still
-`system_capabilities`.
+J3 built the end-to-end Memcheck pipeline: an allowlisted target is run under
+Valgrind in XML mode, the raw XML is preserved as evidence, and a canonical
+report is written next to it. J4 exposes the pipeline through the
+`analysis_start`, `analysis_status`, `analysis_cancel`, `analysis_report` and
+`analysis_artifact` MCP tools. The request layer, pagination, named errors and
+response bounds are documented in [mcp.md](mcp.md); this page describes the
+pipeline and the evidence format.
 
 ## Execution
 
@@ -171,7 +172,7 @@ one diagnostic with `occurrences > 1`.
 | `no_errors_observed` | complete XML with zero unsuppressed errors |
 | `incomplete` | partial XML, timeout, cancellation, quota/limit breach or inconsistent summary |
 | `tool_error` | Valgrind produced no usable evidence or the job failed |
-| `policy_denied` | reserved for the J4 request layer; J3 returns a typed policy error before starting |
+| `policy_denied` | the J4 request layer denied the target or arguments before execution; no run is started |
 
 `analysis_complete=false` whenever evidence is partial. `total=0` with
 `analysis_complete=false` never means "no bug". `total` counts tool-reported
@@ -245,14 +246,23 @@ help output. It never runs a user program and never uses sudo. `available` means
 the binary and Memcheck/XML options were verified. Every actual run revalidates
 the binary: a missing binary at `Start` is a typed `BackendError`, and a binary
 that disappears before `exec` produces a `tool_error` report, never "no errors".
-J4 maps these outcomes to its named API errors.
+J4 maps these outcomes to `backend_unavailable` or `tool_error`; neither can be
+returned as `no_errors_observed`.
 
 ## Tests
 
 ```sh
-go test ./internal/valgrind ./internal/diagnostic
-go test ./tests/integration -run TestMemcheck
+go test ./internal/valgrind ./internal/diagnostic ./internal/analysis
+go test ./tests/integration -run 'TestMemcheck|TestAnalysis'
+go test ./tests/e2e -run TestServeAnalysisWorkflow
 ```
+
+`TestServeAnalysisWorkflow` drives the real MCP client over stdio:
+`analysis_start` → `analysis_status` → `analysis_report` → `analysis_artifact`,
+including pagination of the raw XML and a named `run_not_found` error.
+`TestAnalysisCancelStopsBlockedProgram` and `TestAnalysisPerRequestTimeout` check
+cancellation and per-request timeouts with real Valgrind, including that the job
+manager releases its slot and that partial evidence is never reported as clean.
 
 The integration suite compiles the C fixtures under
 `testdata/fixtures/c` with `-g -O0 -fno-omit-frame-pointer` and runs real

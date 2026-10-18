@@ -540,3 +540,47 @@ func TestManagerStartInDirRespectsQuota(t *testing.T) {
 	}
 	close(release)
 }
+
+func TestManagerPerJobTimeoutShortensManagerLimit(t *testing.T) {
+	if _, err := os.Stat("/bin/sleep"); err != nil {
+		t.Skip("/bin/sleep is not available")
+	}
+
+	manager, _ := newTestManager(t, runner.New(), Options{
+		MaxJobs: 1,
+		Timeout: 10 * time.Second,
+	})
+	spec := testSpec(t)
+	spec.Executable = "/bin/sleep"
+	spec.Args = []string{"5"}
+	spec.Timeout = 150 * time.Millisecond
+
+	start := time.Now()
+	job, err := manager.Start(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	snapshot := waitJob(t, job)
+	elapsed := time.Since(start)
+
+	if snapshot.State != StateTimedOut {
+		t.Fatalf("state = %q, want timed_out (error: %s)", snapshot.State, snapshot.Error)
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("job took %v; the per-job timeout did not shorten the manager limit", elapsed)
+	}
+}
+
+func TestManagerRejectsNegativeTimeout(t *testing.T) {
+	manager, _ := newTestManager(t, &fakeRunner{
+		runFunc: func(context.Context, runner.Request) (runner.Result, error) {
+			return runner.Result{Started: true}, nil
+		},
+	}, Options{MaxJobs: 1})
+
+	spec := testSpec(t)
+	spec.Timeout = -time.Second
+	if _, err := manager.Start(context.Background(), spec); err == nil {
+		t.Fatal("Start() error = nil, want a negative-timeout rejection")
+	}
+}

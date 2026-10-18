@@ -14,17 +14,37 @@ Memcheck runs add the raw Valgrind XML and the canonical report:
 ```
 
 `analysis.json` and `memcheck.xml` are produced only by the internal Memcheck
-pipeline. They are not exposed through MCP until J4's `analysis_artifact`, and
-`analysis.json` is not a substitute for the raw XML: it is a normalized,
-lossy-for-unknown-fields view.
+pipeline. Since J4 they are readable through `analysis_artifact` as bounded
+excerpts, and `analysis_report` pages the normalized diagnostics. `analysis.json`
+is not a substitute for the raw XML: it is a normalized, lossy-for-unknown-fields
+view.
 
 `run_<32 hex>` comes from `crypto/rand`. The directory is created with mode
 `0700`; files are created with mode `0600`, `O_NOFOLLOW` where applicable and
 atomic temporary-file rename for `result.json`.
 
-Artifacts are not exposed through MCP yet. `analysis_artifact` and access
-control arrive with J4. The Memcheck report format and its invariants are
-documented in [valgrind.md](valgrind.md#canonical-report).
+## MCP artifact access (J4)
+
+`analysis_artifact` accepts a logical type, never a path:
+
+| Type | File |
+|---|---|
+| `raw_xml` | `memcheck.xml` |
+| `analysis_report` | `analysis.json` |
+| `stdout` | `stdout.log` |
+| `stderr` | `stderr.log` |
+| `job_manifest` | `result.json` |
+
+The run id must match `^run_[0-9a-f]{32}$` and name an existing run directory of
+the configured store. The directory is rejected if it is a symbolic link; the
+file is opened with `O_NOFOLLOW|O_NONBLOCK`, must be a regular file, and the file
+name is chosen from the allowlist. Excerpts default to 64 KiB, are hard-capped at
+1 MiB, and continue with `next_offset`. Invalid UTF-8 is replaced with U+FFFD.
+Absolute filesystem paths are never returned. See
+[mcp.md](mcp.md#analysis_artifact).
+
+The normalized report format and its invariants are documented in
+[valgrind.md](valgrind.md#canonical-report).
 
 ## `result.json`
 
@@ -100,17 +120,22 @@ to its own quota). See [valgrind.md](valgrind.md).
 | Files per run | 64 | `artifacts.RunDir` |
 | Captured stdout + stderr | 10 MiB minus 64 KiB manifest reserve, or explicit manager option | `runner` shared budget |
 | Raw Valgrind XML | 8 MiB default (`MaxRawXMLBytes`), minus a 128 KiB report reserve | size watchdog, then adoption truncation |
-| Concurrent jobs | Manager option (configuration `max_jobs` in J4) | `jobs.Manager` |
-| Execution timeout | 120 s | `runner` / job manager |
+| Concurrent jobs | Manager option (configuration `max_jobs`) | `jobs.Manager` |
+| Execution timeout | `limits.timeout_seconds`, or a shorter request `timeout_ms` | `runner` / job manager |
 | TERM → KILL grace | 1 s | `runner` |
+| Diagnostic page | 1 MiB, `min(max_response_items, 500)` items | `analysis.Service` |
+| Artifact excerpt | 64 KiB default, 1 MiB hard cap | `analysis.Artifact` |
 
 Output beyond the byte budget is discarded and marked truncated; the child is
 not blocked. A non-streaming artifact write that exceeds the quota returns
 `ErrQuota` / `ErrFileQuota`.
 
-There is no global retention or total-disk quota yet. Completed jobs remain in
-the manager map for status/report access; retention and cross-session access
-control arrive with J4/J14. The raw XML bound is enforced by polling and
-post-run truncation, not by a kernel quota, and a target can create untracked
-files in its `TMPDIR` (the run directory). This is a documented local-trust
-limitation.
+There is no global retention or total-disk quota yet. J4 keeps up to 256 live
+analysis handles in memory; after eviction, `analysis_status`, `analysis_report`
+and `analysis_artifact` read the persisted manifest and report, so a run id
+remains usable while its directory exists. There is no cross-session access
+control because the server is a single local stdio process and the opaque run id
+is the capability. Global retention, purge and multi-session scoping are J14
+work. The raw XML bound is enforced by polling and post-run truncation, not by a
+kernel quota, and a target can create untracked files in its `TMPDIR` (the run
+directory). This is a documented local-trust limitation.

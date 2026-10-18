@@ -7,14 +7,27 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"sync"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/Morditux/traceanvil-mcp/internal/analysis"
+	"github.com/Morditux/traceanvil-mcp/internal/artifacts"
 	"github.com/Morditux/traceanvil-mcp/internal/capabilities"
 	"github.com/Morditux/traceanvil-mcp/internal/config"
+	"github.com/Morditux/traceanvil-mcp/internal/jobs"
 	"github.com/Morditux/traceanvil-mcp/internal/mcpserver"
+	"github.com/Morditux/traceanvil-mcp/internal/policy"
+	"github.com/Morditux/traceanvil-mcp/internal/runner"
+	"github.com/Morditux/traceanvil-mcp/internal/valgrind"
 	"github.com/Morditux/traceanvil-mcp/internal/version"
 )
+
+// capabilityRefreshInterval controls independent revalidation of backend
+// capabilities. Tool exposure changes trigger tools/list_changed; no user
+// program is ever executed by a probe.
+const capabilityRefreshInterval = 30 * time.Second
 
 func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	configPath, exit := parseConfigFlags("serve", args, stderr)
@@ -32,7 +45,107 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	registry := capabilities.NewRegistry(capabilities.NewConfigProbes(cfg), 0)
 	registry.Refresh(ctx)
 
+	// Cleanup runs in reverse creation order: analysis cache, Memcheck service
+	// (cancels and waits for active analyses), then the job manager.
+	var cleanups []func()
+	defer func() {
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			cleanups[i]()
+		}
+	}()
+
+	store, err := artifacts.NewStore(cfg.ReportDir, cfg.Limits.MaxReportBytes)
+	if err != nil {
+		fmt.Fprintf(stderr, "mcp-native-diagnostics: %v\n", err)
+		return ExitFailure
+	}
+
+	manager, err := jobs.NewManager(store, runner.New(), jobs.Options{
+		MaxJobs: cfg.Limits.MaxJobs,
+		Timeout: time.Duration(cfg.Limits.TimeoutSeconds) * time.Second,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "mcp-native-diagnostics: %v\n", err)
+		return ExitFailure
+	}
+	cleanups = append(cleanups, manager.Close)
+
+	resolver := policy.New(cfg)
+	valgrindService, err := valgrind.NewService(valgrind.ServiceOptions{
+		BinaryProvider: func() (string, string, error) {
+			record, ok := registry.Get(capabilities.BackendValgrind)
+			if !ok {
+				return "", "", &valgrind.BackendError{Reason: "valgrind capability is not registered"}
+			}
+			if record.State != capabilities.StateAvailable || record.Path == "" {
+				reason := record.Reason
+				if reason == "" {
+					reason = "valgrind is " + string(record.State)
+				}
+				return "", "", &valgrind.BackendError{Reason: reason}
+			}
+			return record.Path, record.Version, nil
+		},
+		Store:        store,
+		Manager:      manager,
+		Resolver:     resolver,
+		Roots:        resolver.ResolvedRoots(),
+		Suppressions: cfg.Valgrind.Suppressions,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "mcp-native-diagnostics: %v\n", err)
+		return ExitFailure
+	}
+	cleanups = append(cleanups, valgrindService.Close)
+
+	maxReportBytes := store.MaxBytesPerRun()
+	if maxReportBytes > analysis.DefaultMaxReportBytes {
+		maxReportBytes = analysis.DefaultMaxReportBytes
+	}
+	analysisService, err := analysis.New(analysis.Options{
+		Store:          store,
+		Backend:        analysis.NewValgrindBackend(valgrindService),
+		BackendEnabled: cfg.Backends.Valgrind,
+		BackendAvailable: func() (bool, string) {
+			record, ok := registry.Get(capabilities.BackendValgrind)
+			if !ok {
+				return false, "valgrind capability is not registered"
+			}
+			return record.State == capabilities.StateAvailable, record.Reason
+		},
+		Timeout:          time.Duration(cfg.Limits.TimeoutSeconds) * time.Second,
+		MaxResponseItems: cfg.Limits.MaxResponseItems,
+		MaxReportBytes:   maxReportBytes,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "mcp-native-diagnostics: %v\n", err)
+		return ExitFailure
+	}
+	cleanups = append(cleanups, analysisService.Close)
+
 	server := mcpserver.New(cfg, registry, version.Current(), logger)
+	for _, definition := range mcpserver.AnalysisDefinitions(analysisService) {
+		if err := server.Register(definition); err != nil {
+			logger.Error("register analysis tool", "tool", definition.Name, "error", err)
+			return ExitFailure
+		}
+	}
+	server.SyncTools()
+
+	refreshCtx, stopRefresh := context.WithCancel(ctx)
+	var refreshWG sync.WaitGroup
+	refreshWG.Add(1)
+	go func() {
+		defer refreshWG.Done()
+		runCapabilityRefresh(refreshCtx, capabilityRefreshInterval, func(ctx context.Context) (added, removed []string) {
+			registry.Refresh(ctx)
+			if ctx.Err() != nil {
+				return nil, nil
+			}
+			return server.SyncTools()
+		}, logger)
+	}()
+
 	logger.Info("serving MCP over stdio",
 		"profile", cfg.Policy.Profile,
 		"targets", len(cfg.AllowedTargets),
@@ -43,6 +156,10 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		Writer: nopWriteCloser{Writer: stdout},
 	}
 	err = server.Run(ctx, transport)
+
+	stopRefresh()
+	refreshWG.Wait()
+
 	// A context-driven shutdown and an EOF on stdin are normal MCP stdio
 	// terminations, not failures.
 	if err != nil && ctx.Err() == nil && !errors.Is(err, io.EOF) {
@@ -50,6 +167,37 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		return ExitFailure
 	}
 	return ExitSuccess
+}
+
+// refreshFunc revalidates capabilities and reconciles tool exposure.
+type refreshFunc func(context.Context) (added, removed []string)
+
+// runCapabilityRefresh revalidates capabilities on a fixed interval,
+// independently of business calls. It returns when ctx is canceled.
+func runCapabilityRefresh(ctx context.Context, interval time.Duration, refresh refreshFunc, logger *slog.Logger) {
+	if interval <= 0 {
+		interval = capabilityRefreshInterval
+	}
+	if logger == nil {
+		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			added, removed := refresh(ctx)
+			if ctx.Err() != nil {
+				return
+			}
+			if len(added) > 0 || len(removed) > 0 {
+				logger.Info("capability refresh changed the tool list",
+					"added", added, "removed", removed)
+			}
+		}
+	}
 }
 
 // parseConfigFlags parses "command --config <file>". It returns a non-negative

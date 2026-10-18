@@ -21,37 +21,59 @@ Use GitHub's private vulnerability reporting on this repository
 You will receive an acknowledgement and a remediation plan. Please allow time for
 a fix before public disclosure.
 
-## Current surface (J1)
+## Current surface (J4)
 
 - `serve` starts an MCP server over stdin/stdout. stdout carries only JSON-RPC
   messages; logs and errors go to stderr.
 - `system_capabilities` is read-only. It reports build identity, policy, limits,
   backend state, exposed tools and warnings. It never launches a program.
+- `analysis_start` launches one allowlisted target under Valgrind. The client
+  sends a configured `target_id`, never a path or shell string. Only the
+  allowlisted Memcheck option surface is accepted; `trace_children=true` is
+  rejected.
+- `analysis_status`, `analysis_report` and `analysis_artifact` are read-only and
+  never launch a program. `analysis_cancel` only signals a run that this server
+  process owns or acknowledges that a persisted run is not active.
 - `doctor` and `validate-config` are local, read-only commands. `doctor` uses
   `stat` for path checks and never executes a target.
-- Startup probes resolve enabled backend executables with `PATH`, run
-  `--version`, and for Valgrind additionally run `--tool=memcheck --help` to
-  verify Memcheck/XML option support. Both are bounded (2-second timeout, bounded
-  output, minimal environment). Relative `PATH` entries are rejected.
-  `lldb-dap` is resolved but not executed. No user program is run.
-- No MCP tool launches a target yet. J2 provides an internal runner
-  (`policy` → `runner` → `artifacts` → `jobs`) and J3 adds an internal Memcheck
-  service (`internal/valgrind`), both exercised by tests but not reachable
-  through MCP until `analysis_start` is wired in J4.
-- The internal runner revalidates targets with `EvalSymlinks`, confines program
-  and working directory to resolved workspace roots, uses process groups with
+- Capability probes run at startup and every 30 seconds. They resolve enabled
+  backend executables with `PATH`, run `--version`, and for Valgrind additionally
+  run `--tool=memcheck --help` to verify Memcheck/XML support. They are bounded
+  (2-second timeout, bounded output, minimal environment), never run a user
+  program and never use sudo. Relative `PATH` entries are rejected. `lldb-dap`
+  is resolved but not executed.
+- `analysis_start` is published only while `backend.valgrind` is `available`.
+  Backend availability is revalidated at invocation and the Valgrind binary is
+  revalidated immediately before each run. The evidence tools stay published so
+  an in-flight or persisted run remains queryable if the backend disappears.
+- The runner revalidates targets with `EvalSymlinks`, confines program and
+  working directory to resolved workspace roots, uses process groups with
   TERM/KILL cleanup, does not inherit the server environment or stdin, and
-  bounds stdout/stderr by a shared byte budget.
-- J3 treats Valgrind XML as untrusted: it is parsed token by token with bounds on
-  bytes, depth, diagnostics, frames and string lengths. Truncation, malformed
-  input or quota breaches produce `incomplete`/`tool_error`, never a clean
-  result. Raw XML is adopted with `O_NOFOLLOW`, checked as a regular file,
-  truncated to the run quota and chmodded `0600`.
+  bounds stdout/stderr by a shared byte budget. A per-request timeout can only
+  shorten the configured maximum.
+- Valgrind XML is untrusted: it is parsed token by token with bounds on bytes,
+  depth, diagnostics, frames and string lengths. Truncation, malformed input or
+  quota breaches produce `incomplete`/`tool_error`, never a clean result. Raw XML
+  is adopted with `O_NOFOLLOW`, checked as a regular file, truncated to the run
+  quota and chmodded `0600`.
+- Persisted `analysis.json` is treated as untrusted input. The API validates its
+  schema version, run id, diagnostics, fingerprints, severities and summary
+  consistency; a mismatch is `report_invalid`, never an empty clean result.
+- `analysis_report` pages are bounded by items and bytes. Oversized diagnostics
+  are explicitly omitted and unreadable ones explicitly counted; the summary
+  remains report-wide. A decoded-report cache is bounded to 16 MiB per report
+  and 64 MiB total.
+- `analysis_artifact` accepts only logical artifact types. Run ids must match
+  `^run_[0-9a-f]{32}$`; the run directory must be a real directory; files are
+  opened with `O_NOFOLLOW|O_NONBLOCK`, must be regular files, and are read as
+  bounded excerpts. No absolute path is returned and arbitrary files cannot be
+  read. FIFO and symlink plants are rejected without blocking.
 - Suppression profiles are configuration-defined, confined to workspace roots,
   capped at 1 MiB and revalidated with `EvalSymlinks`/`O_NOFOLLOW` at invocation.
   Suppressed errors are reported as counts and are never called resolved.
-- `trace_children=true` is rejected at J3 because separate child XML documents
-  are not collected or attributed yet.
+- `analysis_cancel` never turns partial evidence into a successful "no errors"
+  result; cancellation, timeout and parse failure all keep
+  `analysis_complete=false`.
 
 ## Threat model
 
@@ -69,8 +91,10 @@ Explicit assumptions and limits:
 3. **The MCP client is trusted.** A compromised agent can request every operation
    that the local policy allows.
 4. **Raw artifacts may contain sensitive data** (memory strings, process arguments,
-   paths, addresses). They are bounded and access-controlled, not automatically
-   redacted.
+   paths, addresses). They are bounded and their access is limited to the opaque
+   run id, but they are not automatically redacted. The stdio transport has no
+   caller authentication and the opaque run id is the only capability for
+   persisted evidence.
 5. **No network service exists.** The MVP serves MCP over stdio only; there is no
    HTTP transport, telemetry or upload.
 6. **Policy checks are not atomic with execution.** A target program or working
@@ -102,8 +126,9 @@ These are non-negotiable for every milestone:
   cleanup. Outputs and artifacts are bounded and explicitly marked when truncated.
 - Jobs get private artifact directories (`0700`) with cryptographically random
   names, opened with `O_NOFOLLOW`; writes are atomic and bounded by per-run byte
-  and file-count quotas. Access is scoped to the owning session in later
-  milestones.
+  and file-count quotas. Reads revalidate the run id, reject symlinked run
+  directories and non-regular files, and use `O_NOFOLLOW|O_NONBLOCK`. Access is
+  scoped to the owning session in later milestones.
 - A program exit code is tracked separately from the job state. A timeout, kill
   or infrastructure failure never becomes a successful "no errors" result. The
   `--error-exitcode=42` marker is never treated as proof on its own; XML is
@@ -129,8 +154,8 @@ These are non-negotiable for every milestone:
 - Prefer the `safe-default` profile; opt in to elevated features explicitly.
 - Treat `perf`/ptrace restrictions as expected conditions, not bugs to bypass.
 - Review the raw artifacts retention policy before collecting large reports.
-  J2/J3 enforce per-run quotas only; global retention and disk quotas arrive
-  later.
+  J2–J4 enforce per-run quotas and bounded API responses only; global
+  retention and disk quotas arrive later.
 - A target runs as the same OS user as the server and can inspect or modify its
   run directory, including the raw XML, between writer and parser. The pipeline
   detects symlink replacement and bounds the file, but it cannot prove evidence

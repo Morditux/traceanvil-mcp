@@ -1,7 +1,7 @@
 # Compatibility inventory
 
 Recorded on 2026-10-18 from a **read-only** inspection of the reference development
-machine and refreshed at J3 from a read-only inspection. Re-run
+machine and refreshed at J4 from a read-only inspection. Re-run
 `./scripts/preflight.sh` after changing the toolchain and update this table; CI
 runners may differ.
 
@@ -43,7 +43,7 @@ Transitive modules are pinned in `go.sum`. `./scripts/check.sh` runs
 | cmake / ctest | available (4.2.3) | CTest integration possible | J10 |
 | gdb | available (17.1); DAP mode not yet probed | GDB tooling stays hidden until a DAP probe succeeds | J6 |
 | gdbserver | available (17.1); not probed | remote/`vgdb` scenarios possible but experimental | J13 |
-| valgrind | available (3.26.0); Memcheck XML probe passes | internal Memcheck pipeline available; no MCP tool until J4 | J3 |
+| valgrind | available (3.26.0); Memcheck XML probe passes | Memcheck pipeline and `analysis_start` exposed while the capability is available | J3/J4 |
 | vgdb | available (Valgrind 3.26.0); not probed | experimental scenarios deferred | J13 |
 | callgrind_annotate / ms_print | available (3.26.0) | Callgrind/Massif summaries possible | J12 |
 | lldb / lldb-dap | available (21.1.8); DAP not yet probed | LLDB backend stays hidden until the J7 probe | J7 |
@@ -55,9 +55,9 @@ Transitive modules are pinned in `go.sum`. `./scripts/check.sh` runs
 
 Suggested explicit installation (human decision, never performed by the server):
 
-At J3, Valgrind, GDB, LLDB, Clang, Ninja, ShellCheck, gdbserver,
+At J3/J4, Valgrind, GDB, LLDB, Clang, Ninja, ShellCheck, gdbserver,
 `callgrind_annotate` and `ms_print` are installed. No optional package used by
-the J3 tests is missing.
+the J3/J4 tests is missing.
 
 `lldb-dap` may be shipped as `lldb-dap-<version>`; discovery must handle both names
 and record the resolved absolute path.
@@ -76,11 +76,14 @@ Read only; the project never modifies these values.
 
 - The server starts and serves `system_capabilities` regardless of backend
   availability.
-- `memcheck_run`, `helgrind_run`, `drd_run`, `profile_callgrind`,
-  `profile_massif`, `profile_perf` and the LLDB backend must **not** appear in
-  `tools/list` at J3. The Memcheck pipeline is internal until J4.
+- On this machine `backend.valgrind` is `available`, so `analysis_start` is
+  published. `helgrind_run`, `drd_run`, `profile_callgrind`, `profile_massif`,
+  `profile_perf` and the LLDB backend must **not** appear in `tools/list` at J4.
+  `analysis_status`, `analysis_cancel`, `analysis_report` and `analysis_artifact`
+  are always published by the J4 server.
 - `backend.valgrind` is `available` after the functional Memcheck/XML help probe;
-  every run revalidates the binary.
+  every run revalidates the binary, and a capability refresh removes
+  `analysis_start` if the backend disappears.
 - GDB and LLDB records remain `unknown` until their isolated DAP probes (J6/J7);
   a binary on `PATH` alone is not sufficient.
 - No tool reports "no errors" when its backend is missing; the result is an
@@ -89,7 +92,7 @@ Read only; the project never modifies these values.
 ## Notes
 
 - At J1, `doctor` reported every backend as `unknown` (binary discovered) or
-  `unavailable`. As of J3, `backend.valgrind` is `available` on this machine;
+  `unavailable`. As of J3/J4, `backend.valgrind` is `available` on this machine;
   `backend.gdb` and `backend.lldb` remain `unknown` until J6/J7.
 - Valgrind support varies with kernel, architecture and instruction set. The J3
   probe checks `--version` plus the Memcheck XML options in `--tool=memcheck

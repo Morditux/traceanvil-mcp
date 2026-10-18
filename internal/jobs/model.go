@@ -30,6 +30,11 @@ type Spec struct {
 	Args       []string
 	Dir        string
 	Env        []string
+	// Timeout optionally shortens the manager-wide timeout for this job. It
+	// can never extend it: the manager clamps larger values. The request layer
+	// rejects values above the configured maximum instead of relying on that
+	// clamp.
+	Timeout time.Duration
 }
 
 // Result is the program outcome, separate from the job state.

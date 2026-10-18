@@ -23,6 +23,10 @@ type Resolved struct {
 	Args     []string
 }
 
+// ReasonUnknownTarget is the machine-readable reason used when the target id
+// is not declared in configuration.
+const ReasonUnknownTarget = "unknown target"
+
 // DeniedError reports a target that cannot be run under the current policy.
 type DeniedError struct {
 	TargetID string
@@ -65,7 +69,7 @@ func New(cfg *config.Config) *Resolver {
 func (r *Resolver) Resolve(targetID string, args []string) (Resolved, error) {
 	target, ok := r.targets[targetID]
 	if !ok {
-		return Resolved{}, &DeniedError{TargetID: targetID, Reason: "unknown target"}
+		return Resolved{}, &DeniedError{TargetID: targetID, Reason: ReasonUnknownTarget}
 	}
 	if err := validateArgs(target.AllowedArgs, args); err != nil {
 		return Resolved{}, &DeniedError{TargetID: targetID, Reason: err.Error()}

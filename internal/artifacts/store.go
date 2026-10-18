@@ -126,6 +126,64 @@ func (s *Store) Path(id string) (string, error) {
 	return filepath.Join(s.root, id), nil
 }
 
+// RunExists reports whether id names an existing run directory of this store.
+// A symbolic link in place of the directory is not a run.
+func (s *Store) RunExists(id string) bool {
+	path, err := s.Path(id)
+	if err != nil {
+		return false
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false
+	}
+	return info.IsDir() && info.Mode()&os.ModeSymlink == 0
+}
+
+// OpenArtifact opens one named file inside an existing run directory. The run
+// directory must be a real directory (not a symlink), the file name must match
+// the store's allowlist and the final path element is opened with O_NOFOLLOW.
+// Only regular files are accepted.
+//
+// This protects against a replaced final path element, not against a same-user
+// process that swaps the run directory before the open. The store root and run
+// directories are owned by the server's user, so a same-user target can already
+// read and modify them; directory allowlists are not a sandbox.
+func (s *Store) OpenArtifact(id, name string) (*os.File, error) {
+	path, err := s.Path(id)
+	if err != nil {
+		return nil, err
+	}
+	if !namePattern.MatchString(name) {
+		return nil, fmt.Errorf("artifacts: invalid file name %q", name)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("artifacts: inspect run directory: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("artifacts: run directory %q is a symbolic link", id)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("artifacts: run path %q is not a directory", id)
+	}
+
+	file, err := os.OpenFile(filepath.Join(path, name), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, fmt.Errorf("artifacts: open %q: %w", name, err)
+	}
+	fileInfo, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("artifacts: inspect %q: %w", name, err)
+	}
+	if !fileInfo.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, fmt.Errorf("artifacts: %q is not a regular file", name)
+	}
+	return file, nil
+}
+
 // RunDir is one isolated artifact directory.
 type RunDir struct {
 	id       string
@@ -190,9 +248,20 @@ func (d *RunDir) OpenRead(name string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	// O_NONBLOCK keeps a planted FIFO from blocking the reader; it has no
+	// effect on regular files, which are the only accepted target.
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, fmt.Errorf("artifacts: open %q: %w", name, err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("artifacts: inspect %q: %w", name, err)
+	}
+	if !info.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, fmt.Errorf("artifacts: %q is not a regular file", name)
 	}
 	return file, nil
 }
@@ -399,7 +468,7 @@ func (d *RunDir) Adopt(name string, limit int64) (AdoptedFile, error) {
 		return AdoptedFile{}, err
 	}
 
-	file, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOFOLLOW, 0)
+	file, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return AdoptedFile{}, fmt.Errorf("artifacts: adopt %q: %w", name, err)
 	}

@@ -19,7 +19,9 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/Morditux/traceanvil-mcp/internal/analysis"
 	"github.com/Morditux/traceanvil-mcp/internal/config"
+	"github.com/Morditux/traceanvil-mcp/internal/diagnostic"
 	"github.com/Morditux/traceanvil-mcp/internal/mcpserver"
 )
 
@@ -95,14 +97,6 @@ func TestServeStdio(t *testing.T) {
 		t.Error("tools.listChanged = false, want true")
 	}
 
-	tools, err := session.ListTools(ctx, nil)
-	if err != nil {
-		t.Fatalf("ListTools(): %v", err)
-	}
-	if len(tools.Tools) != 1 || tools.Tools[0].Name != "system_capabilities" {
-		t.Fatalf("tools = %v, want exactly system_capabilities", toolNames(tools.Tools))
-	}
-
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "system_capabilities",
 		Arguments: map[string]any{},
@@ -128,8 +122,38 @@ func TestServeStdio(t *testing.T) {
 	if report.Server.Name != "mcp-native-diagnostics" {
 		t.Errorf("server.name = %q, want %q", report.Server.Name, "mcp-native-diagnostics")
 	}
-	if len(report.Tools) != 1 || report.Tools[0].Name != "system_capabilities" || !report.Tools[0].Exposed {
-		t.Errorf("tools = %+v, want exposed system_capabilities", report.Tools)
+	if len(report.Tools) < 5 {
+		t.Errorf("tools = %+v, want system_capabilities and the evidence tools", report.Tools)
+	}
+	expected := make(map[string]bool)
+	for _, status := range report.Tools {
+		if status.Exposed {
+			expected[status.Name] = true
+		}
+	}
+	for _, required := range []string{
+		"system_capabilities",
+		"analysis_status",
+		"analysis_cancel",
+		"analysis_report",
+		"analysis_artifact",
+	} {
+		if !expected[required] {
+			t.Errorf("tools = %+v, want exposed %q", report.Tools, required)
+		}
+	}
+
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListTools(): %v", err)
+	}
+	if len(tools.Tools) != len(expected) {
+		t.Fatalf("tools/list = %v, want the exposed set %v", toolNames(tools.Tools), expected)
+	}
+	for _, tool := range tools.Tools {
+		if !expected[tool.Name] {
+			t.Errorf("tools/list exposes %q, which system_capabilities reports as hidden", tool.Name)
+		}
 	}
 
 	assertTargetNotExecuted(t, sentinel)
@@ -323,4 +347,273 @@ func (b *syncBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
+}
+
+func TestServeAnalysisWorkflow(t *testing.T) {
+	if _, err := exec.LookPath("valgrind"); err != nil {
+		t.Skip("valgrind is not installed; skipping the analysis workflow")
+	}
+	cc, err := exec.LookPath("cc")
+	if err != nil {
+		t.Skip("cc is not installed; skipping the analysis workflow")
+	}
+
+	root := t.TempDir()
+	program := filepath.Join(root, "invalid_read")
+	source := filepath.Join("..", "..", "testdata", "fixtures", "c", "invalid_read.c")
+	build := exec.Command(cc, "-g", "-O0", "-fno-omit-frame-pointer", "-o", program, source)
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("compile fixture: %v\n%s", err, output)
+	}
+
+	configPath := writeAnalysisConfig(t, root, program)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, binaryPath, "serve", "--config", configPath)
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stderr syncBuffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	})
+
+	raw := &syncBuffer{}
+	transport := &mcp.IOTransport{
+		Reader: &teeReadCloser{Reader: io.TeeReader(stdoutPipe, raw), Closer: stdoutPipe},
+		Writer: stdinPipe,
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "analysis-e2e", Version: "0.0.0"}, nil)
+	session, err := client.Connect(ctx, transport, nil)
+	if err != nil {
+		t.Fatalf("connect MCP client: %v\nserver stderr:\n%s", err, stderr.String())
+	}
+
+	tools, err := session.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListTools(): %v", err)
+	}
+	if !containsTool(tools.Tools, "analysis_start") {
+		_ = session.Close()
+		waitForExit(t, cmd, &stderr)
+		t.Skipf("backend.valgrind is not available; tools = %v", toolNames(tools.Tools))
+	}
+
+	startResult := callTool(t, ctx, session, "analysis_start", map[string]any{
+		"target_id": "fixture",
+		"tool":      "memcheck",
+	})
+	var started analysis.Status
+	decodeStructured(t, startResult, &started)
+	if started.RunID == "" {
+		t.Fatal("analysis_start returned an empty run_id")
+	}
+	t.Logf("analysis run_id=%s", started.RunID)
+
+	var status analysis.Status
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		statusResult := callTool(t, ctx, session, "analysis_status", map[string]any{
+			"run_id": started.RunID,
+		})
+		decodeStructured(t, statusResult, &status)
+		if status.Phase == analysis.PhaseCompleted || status.Phase == analysis.PhaseFailed ||
+			status.Phase == analysis.PhaseCancelled || status.Phase == analysis.PhaseTimedOut {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("analysis did not finish: %+v", status)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if status.Phase != analysis.PhaseCompleted || status.State != analysis.StateCompleted {
+		t.Fatalf("final status = %+v", status)
+	}
+	if status.Result != diagnostic.ResultErrorsFound || !status.AnalysisComplete {
+		t.Fatalf("result = %q complete = %v (warnings: %v)", status.Result, status.AnalysisComplete, status.Warnings)
+	}
+	if status.Metrics.Diagnostics != 1 || status.Metrics.Occurrences != 1 {
+		t.Errorf("metrics = %+v, want one diagnostic", status.Metrics)
+	}
+
+	reportResult := callTool(t, ctx, session, "analysis_report", map[string]any{
+		"run_id": started.RunID,
+		"limit":  10,
+	})
+	var page analysis.ReportPage
+	decodeStructured(t, reportResult, &page)
+	if page.Result != diagnostic.ResultErrorsFound || !page.AnalysisComplete {
+		t.Fatalf("report = %+v", page)
+	}
+	if len(page.Diagnostics) != 1 || page.Diagnostics[0].Kind != "InvalidRead" {
+		t.Fatalf("diagnostics = %+v, want one InvalidRead", page.Diagnostics)
+	}
+	if page.Page.Matched != 1 || page.Page.HasMore {
+		t.Errorf("page = %+v, want one matched item and no continuation", page.Page)
+	}
+	t.Logf("report result=%s diagnostics=%d raw_xml_bytes=%d report_bytes=%d",
+		page.Result, page.Page.Matched, status.Metrics.RawXMLBytes, status.Metrics.ReportBytes)
+
+	artifactResult := callTool(t, ctx, session, "analysis_artifact", map[string]any{
+		"run_id":        started.RunID,
+		"artifact_type": "raw_xml",
+		"max_bytes":     500,
+	})
+	var artifact analysis.ArtifactOutput
+	decodeStructured(t, artifactResult, &artifact)
+	if !strings.Contains(artifact.Content, "<valgrindoutput") {
+		t.Errorf("raw XML excerpt does not look like Valgrind XML: %q", artifact.Content)
+	}
+	if !artifact.HasMore || artifact.ReturnedBytes != 500 || artifact.NextOffset != 500 {
+		t.Errorf("artifact = %+v, want a 500-byte continuation", artifact)
+	}
+
+	continuation := callTool(t, ctx, session, "analysis_artifact", map[string]any{
+		"run_id":        started.RunID,
+		"artifact_type": "raw_xml",
+		"offset":        artifact.NextOffset,
+		"max_bytes":     500,
+	})
+	var next analysis.ArtifactOutput
+	decodeStructured(t, continuation, &next)
+	if next.Content == "" || next.Offset != 500 {
+		t.Errorf("continuation = %+v", next)
+	}
+
+	reportArtifact := callTool(t, ctx, session, "analysis_artifact", map[string]any{
+		"run_id":        started.RunID,
+		"artifact_type": "analysis_report",
+		"max_bytes":     4000,
+	})
+	if !strings.Contains(toolResultText(reportArtifact), "schema_version") {
+		t.Errorf("analysis_report excerpt does not contain schema_version: %q", toolResultText(reportArtifact))
+	}
+
+	cancelResult := callTool(t, ctx, session, "analysis_cancel", map[string]any{
+		"run_id": started.RunID,
+	})
+	var canceled analysis.CancelResult
+	decodeStructured(t, cancelResult, &canceled)
+	if canceled.CancelRequested {
+		t.Errorf("cancel_requested = true for a finished run: %+v", canceled)
+	}
+
+	unknown := callToolExpectError(t, ctx, session, "analysis_status", map[string]any{
+		"run_id": "run_ffffffffffffffffffffffffffffffff",
+	})
+	if !strings.Contains(unknown, "run_not_found") {
+		t.Errorf("error text = %q, want run_not_found", unknown)
+	}
+
+	invalidArtifact := callToolExpectError(t, ctx, session, "analysis_artifact", map[string]any{
+		"run_id":        started.RunID,
+		"artifact_type": "secrets",
+	})
+	if !strings.Contains(invalidArtifact, "invalid_argument") {
+		t.Errorf("error text = %q, want invalid_argument", invalidArtifact)
+	}
+
+	invalidField := callToolExpectError(t, ctx, session, "analysis_report", map[string]any{
+		"run_id": started.RunID,
+		"bogus":  true,
+	})
+	if !strings.Contains(invalidField, "bogus") && !strings.Contains(invalidField, "additional") {
+		t.Errorf("error text = %q, want an unknown-field rejection", invalidField)
+	}
+
+	if err := session.Close(); err != nil {
+		t.Logf("close client session: %v", err)
+	}
+	waitForExit(t, cmd, &stderr)
+	assertProtocolOnly(t, raw.Bytes())
+}
+
+func writeAnalysisConfig(t *testing.T, root, program string) string {
+	t.Helper()
+
+	reportDir := filepath.Join(t.TempDir(), "reports")
+	doc := fmt.Sprintf(`{
+		"schema_version": %d,
+		"workspace_roots": [%q],
+		"report_dir": %q,
+		"allowed_targets": [
+			{"id": "fixture", "program": %q, "cwd": %q, "allowed_args": []}
+		],
+		"backends": {"valgrind": true, "gdb": false, "lldb": false},
+		"policy": {"profile": "safe-default", "attach": false, "evaluate": false},
+		"limits": {"timeout_seconds": 60, "max_jobs": 1, "max_response_items": 100}
+	}`, config.SchemaVersion, root, reportDir, program, root)
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func callTool(t *testing.T, ctx context.Context, session *mcp.ClientSession, name string, arguments map[string]any) *mcp.CallToolResult {
+	t.Helper()
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: arguments})
+	if err != nil {
+		t.Fatalf("CallTool(%s): %v", name, err)
+	}
+	if result.IsError {
+		t.Fatalf("CallTool(%s) returned a tool error: %s", name, toolResultText(result))
+	}
+	return result
+}
+
+func callToolExpectError(t *testing.T, ctx context.Context, session *mcp.ClientSession, name string, arguments map[string]any) string {
+	t.Helper()
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: arguments})
+	if err != nil {
+		t.Fatalf("CallTool(%s): %v", name, err)
+	}
+	if !result.IsError {
+		t.Fatalf("CallTool(%s) succeeded, want a tool error: %+v", name, result.StructuredContent)
+	}
+	return toolResultText(result)
+}
+
+func toolResultText(result *mcp.CallToolResult) string {
+	var builder strings.Builder
+	for _, content := range result.Content {
+		if text, ok := content.(*mcp.TextContent); ok {
+			builder.WriteString(text.Text)
+		}
+	}
+	return builder.String()
+}
+
+func decodeStructured(t *testing.T, result *mcp.CallToolResult, target any) {
+	t.Helper()
+	raw, err := json.Marshal(result.StructuredContent)
+	if err != nil {
+		t.Fatalf("marshal structured content: %v", err)
+	}
+	if err := json.Unmarshal(raw, target); err != nil {
+		t.Fatalf("unmarshal structured content: %v (%s)", err, raw)
+	}
+}
+
+func containsTool(tools []*mcp.Tool, name string) bool {
+	for _, tool := range tools {
+		if tool.Name == name {
+			return true
+		}
+	}
+	return false
 }

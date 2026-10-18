@@ -51,6 +51,31 @@ released yet; milestones map to the development plan.
   truncated XML, suppressions).
 - J3: ADR 0006 and `docs/valgrind.md` on the pipeline, parser limits, report
   schema and limitations.
+- J4: `analysis_start`, `analysis_status`, `analysis_cancel`, `analysis_report`
+  and `analysis_artifact` MCP tools backed by the new `internal/analysis`
+  package.
+- J4: named API errors (`invalid_argument`, `backend_unavailable`,
+  `run_not_found`, `invalid_cursor`, `report_invalid`, …) with stable codes.
+- J4: compact report summary plus filtered, cursor-paginated diagnostics, with
+  item and byte budgets, explicit oversize/unreadable accounting and no silent
+  omissions.
+- J4: bounded artifact excerpts for raw XML, normalized report, stdout, stderr
+  and job manifest; logical artifact types only, no paths.
+- J4: per-request `timeout_ms` that can only shorten the configured maximum, and
+  service wiring for `report_dir`, `max_report_bytes`, `timeout_seconds`,
+  `max_jobs` and `max_response_items`.
+- J4: status and reports for runs persisted by a previous server process, read
+  from `result.json`/`analysis.json` with explicit staleness warnings.
+- J4: periodic capability revalidation (30 s) with independent
+  `tools/list_changed` notifications; `analysis_start` appears/disappears with
+  `backend.valgrind` while evidence tools stay published.
+- J4: bounded decoded-report cache (LRU, 16 MiB per report, 64 MiB total) so
+  repeated pagination does not rescan multi-megabyte JSON.
+- J4: tests for 20 000-diagnostic pagination, filters, cursor scoping, report
+  corruption, artifact bounds, FIFO/symlink rejection, cancellation, per-request
+  timeout and the full stdio MCP workflow.
+- J4: ADR 0007 and updated `docs/mcp.md`, `docs/valgrind.md`,
+  `docs/artifacts.md`, `docs/configuration.md` and README.
 
 ### Changed
 
@@ -63,6 +88,15 @@ released yet; milestones map to the development plan.
 - J3: `system_capabilities` warnings and documentation now describe the J3
   state; the compatibility inventory was refreshed (Valgrind 3.26.0, LLDB/Clang
   21.1.8).
+- J4: `serve` now constructs the artifact store, job manager, policy resolver,
+  Memcheck service and analysis service, and closes them in order on shutdown.
+- J4: `analysis_start` is gated on `backend.valgrind`; evidence tools remain
+  available for existing runs. Backend availability is revalidated at every
+  invocation.
+- J4: `system_capabilities` reports the effective page and artifact bounds and
+  the J4 limitation warnings.
+- J4: `jobs.Spec.Timeout` and `valgrind.Request.Timeout` carry a per-run timeout;
+  the manager clamps values above its own limit.
 
 ### Security
 
@@ -79,6 +113,15 @@ released yet; milestones map to the development plan.
   revalidated at invocation; suppressed errors are never "resolved".
 - J3: `trace_children=true` is rejected until child XML documents are collected
   and attributed.
+- J4: artifact reads use logical type allowlists, `O_NOFOLLOW|O_NONBLOCK`,
+  regular-file checks and `run_<32 hex>` validation; FIFO and symlink plants are
+  rejected without blocking or exposing filesystem paths.
+- J4: persisted reports are treated as untrusted: schema, run id, diagnostics,
+  fingerprints and summary totals are validated; inconsistency is
+  `report_invalid`, never an empty clean result.
+- J4: every analysis response is bounded by items and bytes; cache size is
+  bounded; oversized or unreadable diagnostics are reported explicitly.
+- J4: capability refreshes only execute fixed tool probes, never user programs.
 
 ## 0.0.0 — 2026-10-18
 

@@ -14,28 +14,36 @@ The value of the project is not arbitrary command execution. It is:
 
 ## Project status
 
-**Early development — J3 (Memcheck end-to-end) complete.**
+**Early development — J4 (analysis API and pagination) complete.**
 
 The repository now provides:
 
 - a working MCP server over **stdio** (`serve`);
 - strict JSON configuration with `validate-config`;
 - `doctor`, a read-only inspection of configuration, paths and capabilities;
-- a capability registry and conditional tool publication with `tools/list_changed`;
-- one MCP tool, `system_capabilities`;
-- an internal bounded runner: allowlisted targets, symlink revalidation,
-  process-group cleanup, timeouts/cancellation, bounded output, atomic private
-  artifacts and job lifecycle (`internal/policy`, `runner`, `artifacts`, `jobs`);
-- an internal Memcheck pipeline (`internal/valgrind`, `internal/diagnostic`):
-  allowlisted Valgrind options, XML evidence, a bounded streaming parser,
-  canonical diagnostics, leak/suppression reporting and `analysis.json`;
-- a functional Valgrind probe that exposes `backend.valgrind` as `available`
-  only after Memcheck XML support is verified.
+- a capability registry, periodic revalidation and conditional tool publication
+  with `tools/list_changed`;
+- up to six MCP tools: `system_capabilities`, `analysis_start`,
+  `analysis_status`, `analysis_cancel`, `analysis_report` and
+  `analysis_artifact` (`analysis_start` is published only while the Valgrind
+  capability is available);
+- a bounded runner: allowlisted targets, symlink revalidation, process-group
+  cleanup, timeouts/cancellation, bounded output, atomic private artifacts and
+  job lifecycle (`internal/policy`, `runner`, `artifacts`, `jobs`);
+- a Memcheck pipeline (`internal/valgrind`, `internal/diagnostic`): allowlisted
+  Valgrind options, XML evidence, a bounded streaming parser, canonical
+  diagnostics, leak/suppression reporting and `analysis.json`;
+- an analysis API (`internal/analysis`): named errors, asynchronous start,
+  status, cancellation, per-request timeouts, filtered and cursor-paginated
+  reports, bounded artifact excerpts, persisted-run fallback and response/cache
+  quotas;
+- a functional Valgrind probe that exposes `backend.valgrind` as `available` only
+  after Memcheck XML support is verified.
 
-**No MCP tool launches a program yet.** The Memcheck pipeline is exercised by
-internal and integration tests; `analysis_start` is wired in J4. GDB arrives with
-J6, LLDB with J7, sanitizers and CTest with J9/J10, profilers with J12/J13. Do
-not deploy this project yet.
+`analysis_start` launches one allowlisted target under Valgrind; the other
+analysis tools only inspect its bounded evidence. GDB arrives with J6, LLDB with
+J7, sanitizers and CTest with J9/J10, profilers with J12/J13. Do not deploy this
+project yet.
 
 Roadmap, safety rules and acceptance criteria are defined in the project
 specification and tracked as milestones J0 to J14.
@@ -52,8 +60,8 @@ Analysis backends have additional requirements (Valgrind, GDB, LLDB, sanitizers,
 `perf`). Their availability is detected at runtime and missing tools hide the
 corresponding MCP tools instead of failing the server. See
 [docs/compatibility.md](docs/compatibility.md) for the recorded state of the
-development machine and [docs/valgrind.md](docs/valgrind.md) for the J3 pipeline,
-report schema and limitations.
+development machine and [docs/valgrind.md](docs/valgrind.md) for the Memcheck
+pipeline, report schema and limitations.
 
 ## Build and run
 
@@ -116,16 +124,25 @@ These codes apply to the compiled binary. `go run` reports any non-zero exit as
 
 ### Current MCP surface
 
-`system_capabilities` is still the only MCP tool at J3. It is read-only, never
-launches a program, and returns build information, the effective policy and
-limits, backend capability records, exposed tools and limitation warnings. The
-Memcheck pipeline and its `analysis.json`/`memcheck.xml` artifacts are internal
-until J4.
+`system_capabilities` reports build information, the effective policy and
+limits, backend capability records, exposed tools and limitation warnings. It is
+read-only and never launches a program.
 
-Tools are published from the capability registry. A missing Valgrind, GDB or
-LLDB only changes the tool list; it does not prevent the server from starting.
-The `system_capabilities` payload carries `schema_version = 1`. See
-[docs/mcp.md](docs/mcp.md) for the payload and capability states.
+`analysis_start` launches one Memcheck run of a declared target and returns a
+`run_id`. `analysis_status` reports state, phase, progress and metrics;
+`analysis_cancel` stops the process group; `analysis_report` returns the compact
+summary plus a filtered, bounded page of diagnostics with an opaque cursor;
+`analysis_artifact` returns bounded excerpts of `memcheck.xml`, `analysis.json`,
+stdout, stderr or `result.json`. No tool accepts a filesystem path or a shell
+command, and partial evidence is never returned as a clean result.
+
+Tools are published from the capability registry. `analysis_start` appears only
+while `backend.valgrind` is `available`; a missing backend never prevents the
+server from starting or hides persisted evidence. Capabilities are revalidated
+every 30 seconds and `notifications/tools/list_changed` is emitted when the
+exposed set changes. All payloads carry `schema_version = 1`. See
+[docs/mcp.md](docs/mcp.md) for schemas, error codes and pagination, and
+[docs/valgrind.md](docs/valgrind.md) for the evidence format.
 
 ## Repository layout
 
@@ -140,7 +157,8 @@ internal/artifacts/           Private run directories and atomic writes
 internal/jobs/                Job lifecycle, quotas and result manifests
 internal/diagnostic/          Canonical report, normalization and fingerprints
 internal/valgrind/            Memcheck options, XML parser and analysis service
-internal/mcpserver/           MCP server, tool publication, system_capabilities
+internal/analysis/            Analysis API, named errors, pagination and artifacts
+internal/mcpserver/           MCP server, tool publication, analysis tools
 internal/version/             Build information
 testdata/fixtures/c/          Reviewed C fixtures for Memcheck E2E tests
 testdata/fixtures/valgrind/   Static valid/truncated/malformed XML fixtures
@@ -179,7 +197,14 @@ Further analysis packages (`dap`, `debugger`, `sanitizer`, `profile`, `ctest`,
 - Memcheck end-to-end tests (invalid read/write, use-after-free, double free,
   uninitialised value, leaks, clean program, SIGSEGV, timeout, cancellation,
   truncated XML and suppressions) that compile the C fixtures and run real
-  Valgrind; they skip when `valgrind` or `cc` is missing.
+  Valgrind; they skip when `valgrind` or `cc` is missing;
+- analysis API tests for 20 000-diagnostic pagination, filters, cursor scoping,
+  byte/item bounds, oversized and unreadable diagnostics, report corruption,
+  artifact excerpts, FIFO/symlink rejection and named errors;
+- a real stdio MCP end-to-end test that drives `analysis_start` → `status` →
+  `report` → `artifact` against Valgrind, and integration tests for cancellation
+  and per-request timeouts that verify no job slot leaks and no false clean
+  result.
 
 `preflight.sh` never installs packages, never edits kernel settings and never
 executes a user program. Installing tools is an explicit, human-approved step.
@@ -189,12 +214,13 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for code, test and review expectations.
 ## Security
 
 This server launches native programs. Directory allowlists are **not** a
-sandbox, and an allowlisted binary may still be malicious. The J2 runner uses
+sandbox, and an allowlisted binary may still be malicious. The runner uses
 process groups, a minimal environment and bounded output, but it is not a
-container. J3 treats Valgrind XML as untrusted input and bounds it with size,
-depth, record, frame and string limits; a target still runs as the same user and
-can inspect or tamper with its run directory. Read [SECURITY.md](SECURITY.md)
-before using the project with untrusted code.
+container. Valgrind XML and persisted reports are treated as untrusted input and
+bounded by size, depth, record, frame and string limits; API responses are
+bounded by items and bytes. A target still runs as the same user and can inspect
+or tamper with its run directory. Read [SECURITY.md](SECURITY.md) before using
+the project with untrusted code.
 
 ## License
 

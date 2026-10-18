@@ -75,9 +75,11 @@ func New(cfg *config.Config, caps *capabilities.Registry, info version.Info, log
 		},
 		&mcp.ServerOptions{
 			Logger: logger,
-			Instructions: "Native dynamic-analysis server. Only system_capabilities is " +
-				"available at this milestone; analysis tools appear once their backend is " +
-				"implemented, enabled and verified.",
+			Instructions: "Native dynamic-analysis server. system_capabilities reports build, " +
+				"policy and backend state. analysis_start runs one bounded Memcheck analysis of a " +
+				"declared target; analysis_status, analysis_report and analysis_artifact expose " +
+				"status and bounded evidence. analysis_start is published only while backend.valgrind " +
+				"is available. Never interpret incomplete evidence as a clean result.",
 			Capabilities: &mcp.ServerCapabilities{
 				Tools: &mcp.ToolCapabilities{ListChanged: true},
 			},

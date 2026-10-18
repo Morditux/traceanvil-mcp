@@ -54,16 +54,27 @@ func (e *BackendError) Is(target error) bool { return target == ErrBackendUnavai
 // A nil Options selects DefaultOptions. A non-nil value is used as given, with
 // Validate filling in only the documented zero-value defaults, so an explicit
 // TrackOrigins=false is honoured.
+//
+// A non-zero Timeout shortens the job timeout for this analysis. The request
+// layer validates it against the configured maximum; the job manager clamps
+// values that exceed its own limit.
 type Request struct {
 	TargetID string
 	Args     []string
 	Options  *Options
+	Timeout  time.Duration
 }
 
 // ServiceOptions wires the analysis service to the J2 execution foundation.
 type ServiceOptions struct {
 	Binary  string
 	Version string
+	// BinaryProvider, when set, returns the current Valgrind binary and version
+	// at invocation time. It is used instead of Binary/Version and lets a
+	// long-lived server follow capability refreshes without rebuilding the
+	// service. The provider must return an absolute path; the path is still
+	// revalidated by Start.
+	BinaryProvider func() (binary, version string, err error)
 
 	Store    *artifacts.Store
 	Manager  *jobs.Manager
@@ -92,16 +103,17 @@ const DefaultWatchInterval = 100 * time.Millisecond
 // unpersistable.
 const analysisReportReserve int64 = 128 << 10
 
-// Service owns the Memcheck pipeline. It does not expose MCP tools; J4 wraps
-// this contract with analysis_start/status/report.
+// Service owns the Memcheck pipeline. It does not expose MCP tools; the
+// analysis API wraps this contract with analysis_start/status/report.
 type Service struct {
 	store    *artifacts.Store
 	manager  *jobs.Manager
 	resolver *policy.Resolver
 
-	binary  string
-	version string
-	roots   []string
+	binary   string
+	version  string
+	provider func() (string, string, error)
+	roots    []string
 
 	suppressions   map[string]string
 	maxRawXMLBytes int64
@@ -127,7 +139,10 @@ func NewService(opts ServiceOptions) (*Service, error) {
 	if opts.Resolver == nil {
 		return nil, errors.New("valgrind: nil policy resolver")
 	}
-	if !filepath.IsAbs(opts.Binary) || opts.Binary == "" {
+	if opts.BinaryProvider == nil && (!filepath.IsAbs(opts.Binary) || opts.Binary == "") {
+		return nil, &BackendError{Reason: "binary must be an absolute path"}
+	}
+	if opts.BinaryProvider != nil && opts.Binary != "" && !filepath.IsAbs(opts.Binary) {
 		return nil, &BackendError{Reason: "binary must be an absolute path"}
 	}
 
@@ -165,6 +180,7 @@ func NewService(opts ServiceOptions) (*Service, error) {
 		resolver:       opts.Resolver,
 		binary:         opts.Binary,
 		version:        opts.Version,
+		provider:       opts.BinaryProvider,
 		roots:          roots,
 		suppressions:   suppressions,
 		maxRawXMLBytes: maxRaw,
@@ -239,6 +255,13 @@ func (a *Analysis) Cancel() {
 	a.job.Cancel()
 }
 
+// JobSnapshot returns the execution lifecycle of the underlying job. It is
+// separate from the analysis phase: post-processing (parsing, report writing)
+// can still be running after the job has completed.
+func (a *Analysis) JobSnapshot() jobs.Snapshot {
+	return a.job.Snapshot()
+}
+
 func (a *Analysis) setPhase(phase Phase) {
 	a.mu.Lock()
 	a.phase = phase
@@ -288,7 +311,7 @@ func (s *Service) Start(ctx context.Context, req Request) (*Analysis, error) {
 		return nil, err
 	}
 
-	binary, err := resolveExecutable(s.binary)
+	binary, version, err := s.resolveBackend()
 	if err != nil {
 		return nil, err
 	}
@@ -330,6 +353,7 @@ func (s *Service) Start(ctx context.Context, req Request) (*Analysis, error) {
 		Args:       args,
 		Dir:        resolved.Dir,
 		Env:        policy.Environment(""),
+		Timeout:    req.Timeout,
 	})
 	if err != nil {
 		s.mu.Unlock()
@@ -347,7 +371,7 @@ func (s *Service) Start(ctx context.Context, req Request) (*Analysis, error) {
 	s.wg.Add(1)
 	s.mu.Unlock()
 
-	go s.analyze(analysis, runDir, xmlPath, binary, resolved, programHash, programInfo, opts, startedAt)
+	go s.analyze(analysis, runDir, xmlPath, binary, version, resolved, programHash, programInfo, opts, startedAt)
 	return analysis, nil
 }
 
@@ -394,6 +418,7 @@ func (s *Service) analyze(
 	runDir *artifacts.RunDir,
 	xmlPath string,
 	binaryPath string,
+	toolVersion string,
 	target policy.Resolved,
 	programHash string,
 	programInfo os.FileInfo,
@@ -464,7 +489,7 @@ func (s *Service) analyze(
 	buildInput := BuildInput{
 		RunID:       analysis.id,
 		ToolPath:    binaryPath,
-		ToolVersion: s.version,
+		ToolVersion: toolVersion,
 		Roots:       s.roots,
 		Options:     opts,
 		XML:         xmlResult,
@@ -750,6 +775,31 @@ func hashReader(reader io.Reader) (string, error) {
 		return "", err
 	}
 	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// resolveBackend returns the Valgrind binary and version to use for one run.
+// A provider is consulted on every start so a capability refresh can make a
+// newly installed backend visible without recreating the service. The provider
+// is expected to report unavailability as a BackendError; any other error is
+// wrapped so callers can classify it as backend_unavailable.
+func (s *Service) resolveBackend() (string, string, error) {
+	binary, version := s.binary, s.version
+	if s.provider != nil {
+		providedBinary, providedVersion, err := s.provider()
+		if err != nil {
+			var backendErr *BackendError
+			if errors.As(err, &backendErr) {
+				return "", "", err
+			}
+			return "", "", &BackendError{Reason: "Valgrind backend is unavailable", Err: err}
+		}
+		binary, version = providedBinary, providedVersion
+	}
+	resolved, err := resolveExecutable(binary)
+	if err != nil {
+		return "", "", err
+	}
+	return resolved, version, nil
 }
 
 func resolveExecutable(path string) (string, error) {
