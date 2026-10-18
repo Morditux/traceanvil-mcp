@@ -275,6 +275,16 @@ path or a debugger command. The tool uses fixed GDB batch flags and commands,
 with a bounded timeout and response. It is published only while `backend.gdb`
 is available and at least one profile is declared.
 
+### Profiling
+
+Callgrind and Massif use the existing `allowed_targets`, `limits` and
+`backends.valgrind` configuration. No additional config block is required.
+`profile_callgrind` and `profile_massif` are published only while the matching
+`backend.valgrind.callgrind`/`backend.valgrind.massif` probe succeeds and at
+least one target is declared. `timeout_ms` can only shorten
+`limits.timeout_seconds`. Raw profile files are preserved in `report_dir` and
+bounded by `limits.max_report_bytes`.
+
 ### `policy.attach_allowed_pids`
 
 `debug_attach` is refused by default. To enable it, use `elevated-local` with

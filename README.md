@@ -14,7 +14,7 @@ The value of the project is not arbitrary command execution. It is:
 
 ## Project status
 
-**Early development — J11 (cores, controlled attach and prior tooling) complete.**
+**Early development — J12 (Callgrind/Massif profiling and prior tooling) complete.**
 
 The repository now provides:
 
@@ -35,8 +35,9 @@ The repository now provides:
   `analysis_cancel`, `analysis_report`, `analysis_artifact`), the J8
   `diagnostics_diff` tool, the J10 CTest tools (`ctest_discover`, `ctest_run`,
   `ctest_status`, `ctest_cancel`, `ctest_report`, `ctest_artifact`), the J11
-  `core_analyze`/`core_artifact`/`debug_attach` tools and the J6/J7 GDB/LLDB
-  debug tools
+  `core_analyze`/`core_artifact`/`debug_attach` tools, the J12 profile tools
+  (`profile_callgrind`, `profile_massif`, `profile_compare`,
+  `profile_artifact`) and the J6/J7 GDB/LLDB debug tools
   (`debug_start`, `debug_status`, `debug_set_breakpoints`, `debug_continue`,
   `debug_pause`, `debug_step`, `debug_threads`, `debug_stack_trace`,
   `debug_scopes`, `debug_variables`, `debug_stop`). `debug_start` is published
@@ -60,8 +61,8 @@ The repository now provides:
   requests and a scripted mock adapter (`internal/dap/daptest`);
 - a GDB/LLDB DAP backend (`internal/debugger`): declared-target launch, session
   state, breakpoints, continue/pause/step, threads, stack, scopes, variables,
-  explicit termination (detach deferred), session quotas, idle retention and a
-  documented backend-difference matrix;
+  explicit launch termination, controlled GDB attach with detach-on-stop,
+  session quotas, idle retention and a documented backend-difference matrix;
 - a versioned `lldb-dap` discovery probe (`lldb-dap`, `lldb-dap-<N>`) that
   verifies a real DAP `initialize` handshake;
 - functional capability probes: Valgrind exposes `backend.valgrind` only after
@@ -70,11 +71,12 @@ The repository now provides:
 
 `analysis_start` launches one allowlisted target under Valgrind; the other
 analysis tools only inspect its bounded evidence. `debug_start` launches one
-allowlisted target under GDB or LLDB through DAP; the other debug tools inspect a
-stopped session. Sanitizers, CTest and profilers remain later milestones. Both
-debugger backends are deliberately narrow: no attach, expression evaluation, raw
-memory read, debugger command passthrough or debuggee terminal I/O exposed over
-MCP. Do not deploy this project yet.
+allowlisted target under GDB or LLDB through DAP, and `debug_attach` is limited to
+an explicit GDB PID allowlist. `profile_callgrind` and `profile_massif` run
+declared targets with fixed native-output flags. The debugger tools are
+deliberately narrow: no expression evaluation, raw memory read, debugger command
+passthrough or debuggee terminal I/O is exposed over MCP. Do not deploy this
+project yet.
 
 Roadmap, safety rules and acceptance criteria are defined in the project
 specification and tracked as milestones J0 to J14.
@@ -84,9 +86,9 @@ specification and tracked as milestones J0 to J14.
 - Linux (Ubuntu 24.04 LTS or newer is the reference platform), `amd64` first.
 - Go **1.25 or newer** (CI tests `1.25.x` and the current stable release).
 - A C toolchain (`gcc`) for `go test -race` and the C fixtures.
-- Valgrind for the real Memcheck/Helgrind/DRD tests, a C toolchain with
-  sanitizer runtimes for ASan/UBSan/LSan/TSan tests, and GDB/`lldb-dap` for the
-  real debugger tests; those tests skip with a documented reason when a tool is
+- Valgrind for the real Memcheck/Helgrind/DRD/Callgrind/Massif tests, a C
+  toolchain with sanitizer runtimes for ASan/UBSan/LSan/TSan tests, and
+  GDB/`lldb-dap` for the real debugger tests; those tests skip with a documented reason when a tool is
   unavailable.
 
 Analysis backends have additional requirements (Valgrind, GDB, LLDB, sanitizers,
@@ -207,7 +209,8 @@ error codes and pagination, [docs/valgrind.md](docs/valgrind.md) for the evidenc
 format, [docs/diff.md](docs/diff.md) for run comparison,
 [docs/sanitizers.md](docs/sanitizers.md) for sanitizer runs,
 [docs/ctest.md](docs/ctest.md) for CTest integration,
-[docs/core-and-attach.md](docs/core-and-attach.md) for cores/attach, and
+[docs/core-and-attach.md](docs/core-and-attach.md) for cores/attach,
+[docs/profile.md](docs/profile.md) for profiling, and
 [docs/debugger.md](docs/debugger.md) for the GDB/LLDB backends.
 
 ## Repository layout
@@ -226,6 +229,7 @@ internal/valgrind/            Memcheck/Helgrind/DRD options, XML parser and serv
 internal/sanitizer/           ASan/UBSan/LSan/TSan parser, reports and service
 internal/ctest/               Trusted CTest discovery, execution and JUnit reports
 internal/core/                Configured core-dump analysis with fixed GDB
+internal/profile/             Callgrind/Massif native parsers and comparisons
 internal/analysis/            Analysis API, named errors, pagination and artifacts
 internal/dap/                 Generic DAP framing, client, state and capabilities
 internal/dap/daptest/         Scripted in-memory DAP adapter for tests
@@ -245,6 +249,7 @@ docs/diff.md                  Fingerprint pairing, compatibility and diff semant
 docs/sanitizers.md            ASan/UBSan/LSan/TSan execution, parsing and limits
 docs/ctest.md                 CTest project discovery, selection and reports
 docs/core-and-attach.md       Core profiles and controlled attach
+docs/profile.md               Callgrind/Massif profiling and comparison
 docs/dap.md                   DAP framing, client lifecycle, state and limits
 docs/debugger.md              GDB/LLDB backends, debug API, lifecycle and limits
 docs/mcp.md                   MCP transport, tool discovery and payloads

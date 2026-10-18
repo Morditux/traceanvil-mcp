@@ -21,7 +21,7 @@ Use GitHub's private vulnerability reporting on this repository
 You will receive an acknowledgement and a remediation plan. Please allow time for
 a fix before public disclosure.
 
-## Current surface (J11)
+## Current surface (J12)
 
 - `serve` starts an MCP server over stdin/stdout. stdout carries only JSON-RPC
   messages; logs and errors go to stderr.
@@ -52,6 +52,12 @@ a fix before public disclosure.
   launch CTest. `ctest_cancel` only signals a run owned by this server process.
   CTest JUnit output is untrusted, bounded XML; missing/unparsable evidence is
   `incomplete`.
+- `profile_callgrind` and `profile_massif` run only declared targets with fixed
+  Valgrind arguments; the client supplies no flag, path or shell fragment. The
+  target working directory is refused if it contains `.valgrindrc`, preventing
+  extra options outside the fixed command line. Raw native files and normalized
+  reports are bounded and preserved. Comparisons refuse event/unit mismatches
+  and are explicitly descriptive.
 - `core_analyze` opens only a configured core/executable pair with fixed GDB
   batch commands; no client path, expression, debugger command or shell flag is
   accepted. Missing/mismatched/truncated core evidence is incomplete, never a

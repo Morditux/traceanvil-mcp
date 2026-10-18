@@ -183,6 +183,13 @@ released yet; milestones map to the development plan.
 - J11: core raw GDB output is preserved as `core-gdb.log` with `core_artifact`
   paging, core/executable ownership and identity checks, and degraded-marker
   handling.
+- J12: `backend.valgrind.callgrind`/`massif` probes, native Callgrind/Massif
+  parsers, normalized metrics, top self-cost functions, peak heap and bounded
+  snapshot samples.
+- J12: `profile_callgrind`, `profile_massif`, `profile_compare` and
+  `profile_artifact` with raw `callgrind.out`/`massif.out` evidence, strict
+  timeout/cancellation, target hashes, `.valgrindrc` refusal and event/unit
+  compatibility checks.
 - J11: real GDB attach/detach fixture, real gcore/GDB core fixture, attach
   default-refusal tests, MCP schema/gating tests, ADR 0014 and
   `docs/core-and-attach.md`.
@@ -243,6 +250,9 @@ released yet; milestones map to the development plan.
   non-empty PID allowlist and a debugger backend is available. Empty allowlists
   deny by default. Attached sessions detach on `debug_stop` unless
   `terminate=true`.
+- J12: profile run tools are hidden without their specific Callgrind/Massif
+  capability. Comparisons refuse event/unit mismatches and incomplete profiles;
+  deltas are descriptive, not regression claims.
 
 ### Security
 

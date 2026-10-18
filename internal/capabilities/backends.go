@@ -7,16 +7,18 @@ import (
 
 // Capability IDs for external backends.
 const (
-	BackendValgrind         = "backend.valgrind"
-	BackendValgrindHelgrind = "backend.valgrind.helgrind"
-	BackendValgrindDRD      = "backend.valgrind.drd"
-	BackendGDB              = "backend.gdb"
-	BackendLLDB             = "backend.lldb"
-	BackendSanitizerASan    = "backend.sanitizer.asan"
-	BackendSanitizerUBSan   = "backend.sanitizer.ubsan"
-	BackendSanitizerLSan    = "backend.sanitizer.lsan"
-	BackendSanitizerTSan    = "backend.sanitizer.tsan"
-	BackendCTest            = "backend.ctest"
+	BackendValgrind          = "backend.valgrind"
+	BackendValgrindHelgrind  = "backend.valgrind.helgrind"
+	BackendValgrindDRD       = "backend.valgrind.drd"
+	BackendValgrindCallgrind = "backend.valgrind.callgrind"
+	BackendValgrindMassif    = "backend.valgrind.massif"
+	BackendGDB               = "backend.gdb"
+	BackendLLDB              = "backend.lldb"
+	BackendSanitizerASan     = "backend.sanitizer.asan"
+	BackendSanitizerUBSan    = "backend.sanitizer.ubsan"
+	BackendSanitizerLSan     = "backend.sanitizer.lsan"
+	BackendSanitizerTSan     = "backend.sanitizer.tsan"
+	BackendCTest             = "backend.ctest"
 )
 
 // NewConfigProbes builds the discovery probes implied by configuration.
@@ -52,6 +54,20 @@ func NewConfigProbes(cfg *config.Config) []Probe {
 				[]string{"user options for drd", "--xml=yes", "--error-exitcode"},
 			).
 			WithNote("DRD XML and tool help verified; no user program was run"),
+		NewBinaryProbe(BackendValgrindCallgrind, "valgrind", "valgrind", cfg.Backends.Valgrind,
+			[]string{"callgrind", "native-profile", "callgrind-out-file"}).
+			WithFunctionalCheck(
+				[]string{"--tool=callgrind", "--help"},
+				[]string{"user options for Callgrind", "--callgrind-out-file", "--collect-jumps"},
+			).
+			WithNote("Callgrind native output option verified; no user program was run"),
+		NewBinaryProbe(BackendValgrindMassif, "valgrind", "valgrind", cfg.Backends.Valgrind,
+			[]string{"massif", "native-profile", "massif-out-file"}).
+			WithFunctionalCheck(
+				[]string{"--tool=massif", "--help"},
+				[]string{"user options for Massif", "--massif-out-file", "--time-unit"},
+			).
+			WithNote("Massif native output option verified; no user program was run"),
 		NewSanitizerProbe(cfg.Backends.Sanitizers, policy.New(cfg), "asan"),
 		NewSanitizerProbe(cfg.Backends.Sanitizers, policy.New(cfg), "ubsan"),
 		NewSanitizerProbe(cfg.Backends.Sanitizers, policy.New(cfg), "lsan"),

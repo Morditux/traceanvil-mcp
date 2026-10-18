@@ -1,9 +1,9 @@
 # Compatibility inventory
 
 Recorded on 2026-10-18 from a **read-only** inspection of the reference development
-machine and refreshed at J11 from a read-only inspection plus real GDB/LLDB,
-Helgrind/DRD, ASan/UBSan/LSan/TSan, CTest, core-dump and controlled attach
-tests.
+machine and refreshed at J12 from a read-only inspection plus real GDB/LLDB,
+Helgrind/DRD, ASan/UBSan/LSan/TSan, CTest, core-dump, controlled attach and
+Callgrind/Massif tests.
 Re-run `./scripts/preflight.sh` after changing the toolchain and update this
 table; CI runners may differ.
 
@@ -46,6 +46,8 @@ Transitive modules are pinned in `go.sum`. `./scripts/check.sh` runs
 | gdb | available (17.1); DAP `initialize` verified; core/attach workflow tested | `backend.gdb`, `core_analyze` and controlled attach are gated by GDB availability | J6/J11 |
 | gcore | available (GDB 17.1); child core generation tested | core fixtures use `gcore` without changing core_pattern | J11 |
 | Yama ptrace | `ptrace_scope=1`; descendant attach tested | attach is denied for non-descendants; no sysctl change | J11 |
+| Callgrind | available (Valgrind 3.26); native output parsed | `backend.valgrind.callgrind` gates `profile_callgrind` | J12 |
+| Massif | available (Valgrind 3.26); native output parsed | `backend.valgrind.massif` gates `profile_massif` | J12 |
 | gdbserver | available (17.1); not probed | remote/`vgdb` scenarios possible but experimental | J13 |
 | valgrind | available (3.26.0); Memcheck, Helgrind and DRD XML probes pass | Memcheck pipeline, `helgrind_run` and `drd_run` exposed while their capabilities are available | J3/J4/J9 |
 | vgdb | available (Valgrind 3.26.0); not probed | experimental scenarios deferred | J13 |
@@ -59,9 +61,9 @@ Transitive modules are pinned in `go.sum`. `./scripts/check.sh` runs
 
 Suggested explicit installation (human decision, never performed by the server):
 
-At J11, Valgrind, GDB/Gcore, LLDB, Clang, CMake/CTest, Ninja, ShellCheck,
+At J12, Valgrind, GDB/Gcore, LLDB, Clang, CMake/CTest, Ninja, ShellCheck,
 gdbserver, `callgrind_annotate` and `ms_print` are installed. No package was
-installed for J11; the real GDB/LLDB tests use the existing GDB 17.1 and LLDB
+installed for J12; the real GDB/LLDB tests use the existing GDB 17.1 and LLDB
 21.1.8 packages, the sanitizer tests use the existing GCC 15.2 sanitizer
 runtimes, the CTest tests use CMake/CTest 4.2.3, and the core/attach tests use
 the existing gcore/GDB and Yama scope 1. The diff tests are deterministic and
@@ -115,6 +117,9 @@ Read only; the project never modifies these values.
 - The J11 core test generates a core with `gcore` from a reviewed fixture; it
   does not modify `kernel.core_pattern` or disable Yama. The attach test uses a
   directly owned child and verifies detach preserves it.
+- J12 uses the existing Valgrind 3.26 Callgrind/Massif tools and native output;
+  no `callgrind_annotate`/`ms_print` dependency is required for metrics. Com-
+  parison refuses event/unit differences. No perf or vgdb capability is claimed.
 - `diagnostics_diff` is published whenever the analysis service exists, even
   when Valgrind is unavailable. It compares persisted reports only. New reports
   use `sha256-v2`; v1/v2 pairs are `incompatible_runs`. Downgrading

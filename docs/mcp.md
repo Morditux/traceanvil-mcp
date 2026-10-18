@@ -57,6 +57,10 @@ support dynamic lists must reconnect.
 | `diagnostics_diff` | no (compares two persisted reports) | — | yes |
 | `core_analyze` | no (opens a configured core with fixed GDB batch commands) | `backend.gdb` + configured core profile | yes |
 | `core_artifact` | no | — | yes |
+| `profile_callgrind` | **yes**, declared target under Callgrind | `backend.valgrind.callgrind` + usable target | no |
+| `profile_massif` | **yes**, declared target under Massif | `backend.valgrind.massif` + usable target | no |
+| `profile_compare` | no (reads persisted profiles) | — | yes |
+| `profile_artifact` | no | — | yes |
 | `ctest_discover` | no (runs `ctest --show-only`, no test execution) | `backend.ctest` + usable project | yes |
 | `ctest_run` | **yes**, exact allowlisted CTest tests | `backend.ctest` + usable project | no |
 | `ctest_status` | no | — | yes |
@@ -510,6 +514,28 @@ target must be a descendant of the server. `debug_stop` detaches by default for
 attached sessions; `terminate=true` kills the target only when
 `policy.attach_terminate=true`. No attach tool is
 published with an empty allowlist.
+
+## `profile_callgrind` / `profile_massif`
+
+Run a declared target with fixed, non-client-controlled Valgrind flags. The raw
+native file (`callgrind.out` or `massif.out`) and a bounded `profile.json` are
+preserved. Callgrind returns native event totals and up to 32 top functions by
+self cost; Massif returns peak heap/extra/stack bytes, snapshot count and
+bounded samples. `complete=false` on timeout, cancellation, nonzero target exit,
+truncation or parser failure. See [profile.md](profile.md).
+
+## `profile_compare`
+
+Compares two persisted profiles by run id. Different tools, normalized units,
+Callgrind event sets/order or Massif time units are refused with
+`incompatible_profiles`; incomplete profiles are refused. Deltas are
+descriptive and never claim statistical significance or a regression.
+
+## `profile_artifact`
+
+Returns a bounded UTF-8 excerpt of `profile.json`, `callgrind.out` or
+`massif.out` for a persisted profile run. Only artifacts referenced by that
+run's normalized report are accepted; no path is accepted or returned.
 
 ## `debug_start`
 

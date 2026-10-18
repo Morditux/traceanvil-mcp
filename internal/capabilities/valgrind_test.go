@@ -9,7 +9,7 @@ import (
 	"github.com/Morditux/traceanvil-mcp/internal/config"
 )
 
-func TestValgrindConcurrencyToolProbesReal(t *testing.T) {
+func TestValgrindConcurrencyAndProfileProbesReal(t *testing.T) {
 	if _, err := exec.LookPath("valgrind"); err != nil {
 		t.Skip("valgrind is not installed")
 	}
@@ -17,9 +17,11 @@ func TestValgrindConcurrencyToolProbesReal(t *testing.T) {
 	registry := NewRegistry(NewConfigProbes(cfg), 15*time.Second)
 	records := registry.Refresh(context.Background())
 	want := map[string]bool{
-		BackendValgrind:         false,
-		BackendValgrindHelgrind: false,
-		BackendValgrindDRD:      false,
+		BackendValgrind:          false,
+		BackendValgrindHelgrind:  false,
+		BackendValgrindDRD:       false,
+		BackendValgrindCallgrind: false,
+		BackendValgrindMassif:    false,
 	}
 	for _, record := range records {
 		if _, ok := want[record.ID]; !ok {

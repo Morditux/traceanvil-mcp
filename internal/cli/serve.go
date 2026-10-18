@@ -22,6 +22,7 @@ import (
 	"github.com/Morditux/traceanvil-mcp/internal/jobs"
 	"github.com/Morditux/traceanvil-mcp/internal/mcpserver"
 	"github.com/Morditux/traceanvil-mcp/internal/policy"
+	"github.com/Morditux/traceanvil-mcp/internal/profile"
 	"github.com/Morditux/traceanvil-mcp/internal/runner"
 	"github.com/Morditux/traceanvil-mcp/internal/sanitizer"
 	"github.com/Morditux/traceanvil-mcp/internal/valgrind"
@@ -101,6 +102,47 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		return ExitFailure
 	}
 	cleanups = append(cleanups, valgrindService.Close)
+
+	var profileService *profile.Service
+	if cfg.Backends.Valgrind {
+		profileService, err = profile.NewService(profile.ServiceOptions{
+			Store: store, Manager: manager, Resolver: resolver,
+			Roots: resolver.ResolvedRoots(),
+			BinaryProvider: func() (string, string, error) {
+				record, ok := registry.Get(capabilities.BackendValgrind)
+				if !ok {
+					return "", "", errors.New("valgrind capability is not registered")
+				}
+				if record.State != capabilities.StateAvailable || record.Path == "" {
+					reason := record.Reason
+					if reason == "" {
+						reason = "valgrind is " + string(record.State)
+					}
+					return "", "", errors.New(reason)
+				}
+				return record.Path, record.Version, nil
+			},
+			ToolAvailable: func(tool profile.Tool) (bool, string) {
+				id := capabilities.BackendValgrindCallgrind
+				if tool == profile.ToolMassif {
+					id = capabilities.BackendValgrindMassif
+				}
+				record, ok := registry.Get(id)
+				if !ok {
+					return false, id + " capability is not registered"
+				}
+				if record.State != capabilities.StateAvailable {
+					return false, record.Reason
+				}
+				return true, ""
+			},
+			MaxTimeout: time.Duration(cfg.Limits.TimeoutSeconds) * time.Second,
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "mcp-native-diagnostics: %v\n", err)
+			return ExitFailure
+		}
+	}
 
 	backends := map[string]analysis.Backend{
 		analysis.ToolMemcheck: analysis.NewValgrindBackend(valgrindService),
@@ -268,6 +310,14 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		for _, definition := range mcpserver.CoreDefinitions(coreService, registry) {
 			if err := server.Register(definition); err != nil {
 				logger.Error("register core tool", "tool", definition.Name, "error", err)
+				return ExitFailure
+			}
+		}
+	}
+	if profileService != nil {
+		for _, definition := range mcpserver.ProfileDefinitions(profileService, registry) {
+			if err := server.Register(definition); err != nil {
+				logger.Error("register profile tool", "tool", definition.Name, "error", err)
 				return ExitFailure
 			}
 		}
