@@ -61,6 +61,10 @@ support dynamic lists must reconnect.
 | `profile_massif` | **yes**, declared target under Massif | `backend.valgrind.massif` + usable target | no |
 | `profile_compare` | no (reads persisted profiles) | — | yes |
 | `profile_artifact` | no | — | yes |
+| `profile_perf` | **yes, experimental**, declared target under fixed perf stat | `backend.perf` + usable target + successful permission probe | no |
+| `perf_artifact` | no | — | yes |
+| `vgdb_inspect` | **yes, experimental**, fixed read-only vgdb inspection | `backend.vgdb` + `backend.valgrind` + usable target | no |
+| `vgdb_artifact` | no | — | yes |
 | `ctest_discover` | no (runs `ctest --show-only`, no test execution) | `backend.ctest` + usable project | yes |
 | `ctest_run` | **yes**, exact allowlisted CTest tests | `backend.ctest` + usable project | no |
 | `ctest_status` | no | — | yes |
@@ -536,6 +540,27 @@ descriptive and never claim statistical significance or a regression.
 Returns a bounded UTF-8 excerpt of `profile.json`, `callgrind.out` or
 `massif.out` for a persisted profile run. Only artifacts referenced by that
 run's normalized report are accepted; no path is accepted or returned.
+
+## Experimental `profile_perf`
+
+Runs only the fixed command
+`perf stat -j -e task-clock,cycles,instructions -- <target>`.
+The tool is hidden unless `backend.perf` is available after an unprivileged
+permission probe, and a declared target currently resolves. It never changes
+`perf_event_paranoid`, uses sudo or grants capabilities. Results are marked
+`experimental=true`; unsupported/uncounted events are warnings and never
+fabricated zeros. `perf_artifact` exposes bounded `perf.json`, `stdout.log` and
+`stderr.log` excerpts. See [experimental.md](experimental.md).
+
+## Experimental `vgdb_inspect`
+
+Starts a declared target under Valgrind with vgdb enabled and sends only
+`v.info gdbserver_status`, `v.info exectxt` and `v.info scheduler`. There is no
+monitor-command request field or GDB console. Cleanup uses fixed `v.kill` and
+job process-group cancellation; private FIFOs are removed. The tool is hidden
+unless both `backend.vgdb` and `backend.valgrind` are available and a target is
+usable. `vgdb_artifact` exposes bounded `vgdb.json`, `stdout.log` and
+`stderr.log` excerpts.
 
 ## `debug_start`
 

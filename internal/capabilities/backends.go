@@ -12,6 +12,7 @@ const (
 	BackendValgrindDRD       = "backend.valgrind.drd"
 	BackendValgrindCallgrind = "backend.valgrind.callgrind"
 	BackendValgrindMassif    = "backend.valgrind.massif"
+	BackendVgdb              = "backend.vgdb"
 	BackendGDB               = "backend.gdb"
 	BackendLLDB              = "backend.lldb"
 	BackendSanitizerASan     = "backend.sanitizer.asan"
@@ -80,6 +81,8 @@ func NewConfigProbes(cfg *config.Config) []Probe {
 					"--fixture-exclude-any", "--no-tests", "--timeout", "--output-on-failure"},
 			).
 			WithNote("CTest JSON discovery and JUnit options verified; no test was run"),
+		NewPerfProbe(cfg.Backends.Perf),
+		NewVgdbProbe(cfg.Backends.Vgdb),
 		NewGDBProbe(cfg.Backends.GDB).
 			WithNote("no user program was run"),
 		NewLLDBProbe(cfg.Backends.LLDB).

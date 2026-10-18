@@ -89,7 +89,8 @@ func New(cfg *config.Config, caps *capabilities.Registry, info version.Info, log
 				"diagnostics_diff expose status, bounded evidence and versioned run comparison. CTest tools discover and run exact allowlisted tests in trusted test directories, with per-test timeouts and reports. debug_start launches a declared target under GDB or " +
 				"LLDB over DAP; debug_attach is available only for an explicitly allowlisted PID. " +
 				"core_analyze opens configured core profiles with fixed GDB commands. profile_callgrind " +
-				"and profile_massif run declared targets with fixed native-output flags. No arbitrary " +
+				"and profile_massif run declared targets with fixed native-output flags. profile_perf and " +
+				"vgdb_inspect are opt-in experimental surfaces with fixed events/commands. No arbitrary " +
 				"path, flag, attach target, expression evaluation, memory read or debugger command is exposed. " +
 				"Backend-gated tools appear only while at least one debugger capability is available; " +
 				"never interpret incomplete evidence as a clean result.",

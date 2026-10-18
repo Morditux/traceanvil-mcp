@@ -190,6 +190,13 @@ released yet; milestones map to the development plan.
   `profile_artifact` with raw `callgrind.out`/`massif.out` evidence, strict
   timeout/cancellation, target hashes, `.valgrindrc` refusal and event/unit
   compatibility checks.
+- J13: experimental `backend.perf` permission check and `profile_perf` with the
+  fixed events task-clock/cycles/instructions; restricted hosts hide the tool
+  without changing sysctls or capabilities.
+- J13: experimental `backend.vgdb` and `vgdb_inspect` using only the fixed
+  read-only commands `v.info gdbserver_status`, `v.info exectxt` and
+  `v.info scheduler`, with bounded logs/artifacts and private FIFO cleanup.
+  There is no free monitor-command passthrough.
 - J11: real GDB attach/detach fixture, real gcore/GDB core fixture, attach
   default-refusal tests, MCP schema/gating tests, ADR 0014 and
   `docs/core-and-attach.md`.
@@ -253,6 +260,10 @@ released yet; milestones map to the development plan.
 - J12: profile run tools are hidden without their specific Callgrind/Massif
   capability. Comparisons refuse event/unit mismatches and incomplete profiles;
   deltas are descriptive, not regression claims.
+- J13: `profile_perf` is hidden when `perf_event_paranoid`/capabilities would
+  require escalation; `vgdb_inspect` is hidden unless both `backend.vgdb` and
+  `backend.valgrind` are available. Both are explicitly experimental and expose
+  no arbitrary command/monitor surface.
 
 ### Security
 

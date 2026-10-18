@@ -1,9 +1,9 @@
 # Compatibility inventory
 
 Recorded on 2026-10-18 from a **read-only** inspection of the reference development
-machine and refreshed at J12 from a read-only inspection plus real GDB/LLDB,
-Helgrind/DRD, ASan/UBSan/LSan/TSan, CTest, core-dump, controlled attach and
-Callgrind/Massif tests.
+machine and refreshed at J13 from a read-only inspection plus real GDB/LLDB,
+Helgrind/DRD, ASan/UBSan/LSan/TSan, CTest, core-dump, controlled attach,
+Callgrind/Massif and fixed-command vgdb tests.
 Re-run `./scripts/preflight.sh` after changing the toolchain and update this
 table; CI runners may differ.
 
@@ -48,22 +48,22 @@ Transitive modules are pinned in `go.sum`. `./scripts/check.sh` runs
 | Yama ptrace | `ptrace_scope=1`; descendant attach tested | attach is denied for non-descendants; no sysctl change | J11 |
 | Callgrind | available (Valgrind 3.26); native output parsed | `backend.valgrind.callgrind` gates `profile_callgrind` | J12 |
 | Massif | available (Valgrind 3.26); native output parsed | `backend.valgrind.massif` gates `profile_massif` | J12 |
-| gdbserver | available (17.1); not probed | remote/`vgdb` scenarios possible but experimental | J13 |
+| gdbserver | available (17.1); not probed | remote debugger scenarios remain outside the exposed surface | — |
 | valgrind | available (3.26.0); Memcheck, Helgrind and DRD XML probes pass | Memcheck pipeline, `helgrind_run` and `drd_run` exposed while their capabilities are available | J3/J4/J9 |
-| vgdb | available (Valgrind 3.26.0); not probed | experimental scenarios deferred | J13 |
+| vgdb | available (Valgrind 3.26.0); fixed commands tested | `backend.vgdb` + `backend.valgrind` gate the experimental `vgdb_inspect`; no free monitor | J13 |
 | callgrind_annotate / ms_print | available (3.26.0) | Callgrind/Massif summaries possible | J12 |
 | lldb / lldb-dap | available (21.1.8); `lldb-dap` and `lldb-dap-21` discovered; DAP `initialize` verified | `backend.lldb` becomes `available`; LLDB debug sessions are exposed while it remains available | J7 |
 | clang / clang++ | available (21.1.8); GCC 15.2 sanitizer runtimes tested | ASan, UBSan, LSan and TSan fixtures and real runs possible | J9 |
 | ninja | available (1.13.2) | optional CMake generator | J10 |
 | shellcheck | available (0.11.0) | optional script linting | — |
-| perf | present, but `perf_event_paranoid=4` | profiling remains experimental and must report the restriction | J13 |
+| perf | present, but `perf_event_paranoid=4` and no CAP_PERFMON | `backend.perf` unavailable; `profile_perf` hidden without escalation | J13 |
 | jq / xmllint / python3 | available | inspection and fixture utilities | — |
 
 Suggested explicit installation (human decision, never performed by the server):
 
-At J12, Valgrind, GDB/Gcore, LLDB, Clang, CMake/CTest, Ninja, ShellCheck,
-gdbserver, `callgrind_annotate` and `ms_print` are installed. No package was
-installed for J12; the real GDB/LLDB tests use the existing GDB 17.1 and LLDB
+At J13, Valgrind, GDB/Gcore, LLDB, Clang, CMake/CTest, Ninja, ShellCheck,
+gdbserver, `vgdb`, `callgrind_annotate` and `ms_print` are installed. No package
+was installed for J13; the real GDB/LLDB tests use the existing GDB 17.1 and LLDB
 21.1.8 packages, the sanitizer tests use the existing GCC 15.2 sanitizer
 runtimes, the CTest tests use CMake/CTest 4.2.3, and the core/attach tests use
 the existing gcore/GDB and Yama scope 1. The diff tests are deterministic and
@@ -118,8 +118,15 @@ Read only; the project never modifies these values.
   does not modify `kernel.core_pattern` or disable Yama. The attach test uses a
   directly owned child and verifies detach preserves it.
 - J12 uses the existing Valgrind 3.26 Callgrind/Massif tools and native output;
-  no `callgrind_annotate`/`ms_print` dependency is required for metrics. Com-
-  parison refuses event/unit differences. No perf or vgdb capability is claimed.
+  no `callgrind_annotate`/`ms_print` dependency is required for metrics.
+  Comparison refuses event/unit differences.
+- J13 exposes vgdb only with explicit `backends.vgdb`; the real test sends the
+  three fixed read-only commands and verifies cleanup. `perf` is present but
+  unavailable because `perf_event_paranoid=4` and no effective CAP_PERFMON; no
+  sysctl or capability change is attempted, so `profile_perf` is hidden. The
+  perf parser and fixed-runner path are tested with a fake perf executable.
+  The permission probe is not re-run per request; the registry refresh and
+  invocation-time binary check apply. Hybrid CPU event names fail closed.
 - `diagnostics_diff` is published whenever the analysis service exists, even
   when Valgrind is unavailable. It compares persisted reports only. New reports
   use `sha256-v2`; v1/v2 pairs are `incompatible_runs`. Downgrading

@@ -21,7 +21,7 @@ Use GitHub's private vulnerability reporting on this repository
 You will receive an acknowledgement and a remediation plan. Please allow time for
 a fix before public disclosure.
 
-## Current surface (J12)
+## Current surface (J13)
 
 - `serve` starts an MCP server over stdin/stdout. stdout carries only JSON-RPC
   messages; logs and errors go to stderr.
@@ -52,6 +52,13 @@ a fix before public disclosure.
   launch CTest. `ctest_cancel` only signals a run owned by this server process.
   CTest JUnit output is untrusted, bounded XML; missing/unparsable evidence is
   `incomplete`.
+- Experimental `profile_perf` uses a fixed event list and is hidden unless an
+  unprivileged permission probe succeeds. It never changes
+  `perf_event_paranoid`, grants capabilities or uses sudo.
+- Experimental `vgdb_inspect` starts a declared target under Valgrind and sends
+  only `v.info gdbserver_status`, `v.info exectxt` and `v.info scheduler`.
+  There is no free monitor command or GDB console; cleanup uses `v.kill` and
+  process-group cancellation, and private FIFOs are removed.
 - `profile_callgrind` and `profile_massif` run only declared targets with fixed
   Valgrind arguments; the client supplies no flag, path or shell fragment. The
   target working directory is refused if it contains `.valgrindrc`, preventing

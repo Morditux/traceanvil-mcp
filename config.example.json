@@ -19,7 +19,9 @@
     "gdb": true,
     "lldb": false,
     "sanitizers": false,
-    "ctest": false
+    "ctest": false,
+    "perf": false,
+    "vgdb": false
   },
   "policy": {
     "profile": "safe-default",

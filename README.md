@@ -14,7 +14,7 @@ The value of the project is not arbitrary command execution. It is:
 
 ## Project status
 
-**Early development — J12 (Callgrind/Massif profiling and prior tooling) complete.**
+**Early development — J13 (experimental perf/vgdb and prior tooling) complete.**
 
 The repository now provides:
 
@@ -37,7 +37,8 @@ The repository now provides:
   `ctest_status`, `ctest_cancel`, `ctest_report`, `ctest_artifact`), the J11
   `core_analyze`/`core_artifact`/`debug_attach` tools, the J12 profile tools
   (`profile_callgrind`, `profile_massif`, `profile_compare`,
-  `profile_artifact`) and the J6/J7 GDB/LLDB debug tools
+  `profile_artifact`), the experimental J13 `profile_perf`/`vgdb_inspect`
+  tools (with their artifacts) and the J6/J7 GDB/LLDB debug tools
   (`debug_start`, `debug_status`, `debug_set_breakpoints`, `debug_continue`,
   `debug_pause`, `debug_step`, `debug_threads`, `debug_stack_trace`,
   `debug_scopes`, `debug_variables`, `debug_stop`). `debug_start` is published
@@ -210,7 +211,8 @@ format, [docs/diff.md](docs/diff.md) for run comparison,
 [docs/sanitizers.md](docs/sanitizers.md) for sanitizer runs,
 [docs/ctest.md](docs/ctest.md) for CTest integration,
 [docs/core-and-attach.md](docs/core-and-attach.md) for cores/attach,
-[docs/profile.md](docs/profile.md) for profiling, and
+[docs/profile.md](docs/profile.md) for profiling,
+[docs/experimental.md](docs/experimental.md) for perf/vgdb, and
 [docs/debugger.md](docs/debugger.md) for the GDB/LLDB backends.
 
 ## Repository layout
@@ -230,6 +232,8 @@ internal/sanitizer/           ASan/UBSan/LSan/TSan parser, reports and service
 internal/ctest/               Trusted CTest discovery, execution and JUnit reports
 internal/core/                Configured core-dump analysis with fixed GDB
 internal/profile/             Callgrind/Massif native parsers and comparisons
+internal/perf/                Experimental fixed perf stat runner/parser
+internal/vgdb/                Experimental fixed-command vgdb inspection
 internal/analysis/            Analysis API, named errors, pagination and artifacts
 internal/dap/                 Generic DAP framing, client, state and capabilities
 internal/dap/daptest/         Scripted in-memory DAP adapter for tests
@@ -250,6 +254,7 @@ docs/sanitizers.md            ASan/UBSan/LSan/TSan execution, parsing and limits
 docs/ctest.md                 CTest project discovery, selection and reports
 docs/core-and-attach.md       Core profiles and controlled attach
 docs/profile.md               Callgrind/Massif profiling and comparison
+docs/experimental.md          Experimental perf and vgdb surfaces
 docs/dap.md                   DAP framing, client lifecycle, state and limits
 docs/debugger.md              GDB/LLDB backends, debug API, lifecycle and limits
 docs/mcp.md                   MCP transport, tool discovery and payloads

@@ -66,7 +66,8 @@ arguments. Arguments are always passed as a list, never through a shell.
 ### `backends`
 
 ```json
-{"valgrind": true, "gdb": true, "lldb": false, "sanitizers": false, "ctest": false}
+{"valgrind": true, "gdb": true, "lldb": false, "sanitizers": false, "ctest": false,
+ "perf": false, "vgdb": false}
 ```
 
 Enabling a backend allows probing and tool exposure. It never installs software.
@@ -87,7 +88,10 @@ probed by launching `gdb --quiet --nx --interpreter=dap` and completing the DAP
 `lldb-dap` or a versioned `lldb-dap-<N>` in absolute PATH directories and
 completing the same handshake with fixed init settings. `debug_start` is published
 while at least one of `backend.gdb` or `backend.lldb` is `available` and at least
-one declared target currently resolves under policy. An omitted `backend`
+one declared target currently resolves under policy. `perf` and `vgdb` are
+separate experimental opt-ins: `perf` requires a successful unprivileged
+permission probe and `vgdb` requires `vgdb --help` plus the base Valgrind
+capability. They are disabled by default. An omitted `backend`
 prefers GDB, then falls back to LLDB if GDB is disabled or unavailable.
 Execution actions require one available debugger backend. The analysis evidence
 tools (`analysis_status`, `analysis_cancel`, `analysis_report`,
@@ -177,6 +181,8 @@ A capability change reconciles `tools/list` and emits
 | Valgrind DRD | `valgrind` | `backend.valgrind.drd` available when `--tool=drd --help` verifies the tool |
 | Sanitizers | target declarations | `backend.sanitizer.<tool>` available when enabled and at least one usable target declares that tool; runtime instrumentation is trusted, not probed |
 | CTest | `ctest` | `backend.ctest` available when `ctest --help` exposes the fixed discovery, JUnit, selection, timeout, output and fixture-exclusion options used by the server; CTest tools additionally require a usable project |
+| perf | `perf` | `backend.perf` only when configured and the unprivileged permission probe succeeds; `perf_event_paranoid`/capabilities are never changed |
+| vgdb | `vgdb` | `backend.vgdb` when configured and `vgdb --help` exposes the fixed options; the run tool also requires `backend.valgrind` |
 | GDB | `gdb` | `available` when the DAP `initialize` handshake succeeds; no target is loaded |
 | LLDB | `lldb-dap`, `lldb-dap-<N>` | `available` when a versioned-discovery candidate completes the DAP `initialize` handshake; no target is loaded |
 

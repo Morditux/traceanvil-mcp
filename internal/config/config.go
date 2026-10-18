@@ -145,6 +145,8 @@ type Backends struct {
 	LLDB       bool `json:"lldb"`
 	Sanitizers bool `json:"sanitizers"`
 	CTest      bool `json:"ctest"`
+	Perf       bool `json:"perf"`
+	Vgdb       bool `json:"vgdb"`
 }
 
 // Policy records the trust profile and explicit elevated permissions.

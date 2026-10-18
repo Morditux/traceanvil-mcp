@@ -21,12 +21,14 @@ import (
 	"github.com/Morditux/traceanvil-mcp/internal/debugger"
 	"github.com/Morditux/traceanvil-mcp/internal/jobs"
 	"github.com/Morditux/traceanvil-mcp/internal/mcpserver"
+	"github.com/Morditux/traceanvil-mcp/internal/perf"
 	"github.com/Morditux/traceanvil-mcp/internal/policy"
 	"github.com/Morditux/traceanvil-mcp/internal/profile"
 	"github.com/Morditux/traceanvil-mcp/internal/runner"
 	"github.com/Morditux/traceanvil-mcp/internal/sanitizer"
 	"github.com/Morditux/traceanvil-mcp/internal/valgrind"
 	"github.com/Morditux/traceanvil-mcp/internal/version"
+	"github.com/Morditux/traceanvil-mcp/internal/vgdb"
 )
 
 // capabilityRefreshInterval controls independent revalidation of backend
@@ -136,6 +138,64 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 				}
 				return true, ""
 			},
+			MaxTimeout: time.Duration(cfg.Limits.TimeoutSeconds) * time.Second,
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "mcp-native-diagnostics: %v\n", err)
+			return ExitFailure
+		}
+	}
+
+	var perfService *perf.Service
+	if cfg.Backends.Perf {
+		perfService, err = perf.NewService(perf.ServiceOptions{
+			Store: store, Manager: manager, Resolver: resolver,
+			BinaryProvider: func() (string, string, error) {
+				record, ok := registry.Get(capabilities.BackendPerf)
+				if !ok || record.State != capabilities.StateAvailable || record.Path == "" {
+					reason := "backend.perf is unavailable"
+					if ok && record.Reason != "" {
+						reason = record.Reason
+					}
+					return "", "", errors.New(reason)
+				}
+				return record.Path, record.Version, nil
+			},
+			MaxTimeout: time.Duration(cfg.Limits.TimeoutSeconds) * time.Second,
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "mcp-native-diagnostics: %v\n", err)
+			return ExitFailure
+		}
+	}
+
+	var vgdbService *vgdb.Service
+	if cfg.Backends.Vgdb {
+		valgrindProvider := func() (string, string, error) {
+			record, ok := registry.Get(capabilities.BackendValgrind)
+			if !ok || record.State != capabilities.StateAvailable || record.Path == "" {
+				reason := "backend.valgrind is unavailable"
+				if ok && record.Reason != "" {
+					reason = record.Reason
+				}
+				return "", "", errors.New(reason)
+			}
+			return record.Path, record.Version, nil
+		}
+		vgdbProvider := func() (string, string, error) {
+			record, ok := registry.Get(capabilities.BackendVgdb)
+			if !ok || record.State != capabilities.StateAvailable || record.Path == "" {
+				reason := "backend.vgdb is unavailable"
+				if ok && record.Reason != "" {
+					reason = record.Reason
+				}
+				return "", "", errors.New(reason)
+			}
+			return record.Path, record.Version, nil
+		}
+		vgdbService, err = vgdb.NewService(vgdb.ServiceOptions{
+			Store: store, Manager: manager, Resolver: resolver,
+			ValgrindProvider: valgrindProvider, VgdbProvider: vgdbProvider,
 			MaxTimeout: time.Duration(cfg.Limits.TimeoutSeconds) * time.Second,
 		})
 		if err != nil {
@@ -318,6 +378,22 @@ func runServe(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		for _, definition := range mcpserver.ProfileDefinitions(profileService, registry) {
 			if err := server.Register(definition); err != nil {
 				logger.Error("register profile tool", "tool", definition.Name, "error", err)
+				return ExitFailure
+			}
+		}
+	}
+	if perfService != nil {
+		for _, definition := range mcpserver.PerfDefinitions(perfService, registry) {
+			if err := server.Register(definition); err != nil {
+				logger.Error("register perf tool", "tool", definition.Name, "error", err)
+				return ExitFailure
+			}
+		}
+	}
+	if vgdbService != nil {
+		for _, definition := range mcpserver.VgdbDefinitions(vgdbService, registry) {
+			if err := server.Register(definition); err != nil {
+				logger.Error("register vgdb tool", "tool", definition.Name, "error", err)
 				return ExitFailure
 			}
 		}
