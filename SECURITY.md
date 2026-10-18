@@ -21,7 +21,7 @@ Use GitHub's private vulnerability reporting on this repository
 You will receive an acknowledgement and a remediation plan. Please allow time for
 a fix before public disclosure.
 
-## Current surface (J4)
+## Current surface (J4/J5)
 
 - `serve` starts an MCP server over stdin/stdout. stdout carries only JSON-RPC
   messages; logs and errors go to stderr.
@@ -74,6 +74,20 @@ a fix before public disclosure.
 - `analysis_cancel` never turns partial evidence into a successful "no errors"
   result; cancellation, timeout and parse failure all keep
   `analysis_complete=false`.
+- J5 adds an internal generic DAP client (`internal/dap`) for J6/J7. It launches
+  no debugger and adds no MCP tool. Framing is bounded before allocation
+  (64 KiB header, 16 MiB frame), `Content-Length` is a byte count, and malformed
+  or truncated frames are typed protocol failures.
+- The DAP client has exactly one reader and one bounded writer queue. Pending
+  request futures, events and reverse handlers are explicitly bounded; a slow
+  event consumer applies backpressure. Late responses are ignored and counted,
+  and EOF/Close unblock pending requests.
+- Adapter-initiated reverse requests are rejected by default. A configured
+  handler runs with bounded concurrency, is panic-safe and receives a context
+  canceled by Close; it does not grant filesystem, process or network access by
+  itself.
+- The J5 mock adapter (`internal/dap/daptest`) is test-only and implements its
+  own framing to exercise a second decoder.
 
 ## Threat model
 
@@ -124,6 +138,9 @@ These are non-negotiable for every milestone:
   revalidated at invocation time.
 - Long operations honour `context.Context`, deadlines, cancellation and process
   cleanup. Outputs and artifacts are bounded and explicitly marked when truncated.
+- DAP frames are validated and bounded before allocation; a response for an
+  unknown or expired request future is dropped, and a cancelled request never
+  becomes a successful response.
 - Jobs get private artifact directories (`0700`) with cryptographically random
   names, opened with `O_NOFOLLOW`; writes are atomic and bounded by per-run byte
   and file-count quotas. Reads revalidate the run id, reject symlinked run
@@ -154,8 +171,8 @@ These are non-negotiable for every milestone:
 - Prefer the `safe-default` profile; opt in to elevated features explicitly.
 - Treat `perf`/ptrace restrictions as expected conditions, not bugs to bypass.
 - Review the raw artifacts retention policy before collecting large reports.
-  J2–J4 enforce per-run quotas and bounded API responses only; global
-  retention and disk quotas arrive later.
+  J2–J5 enforce per-run quotas, bounded API responses and bounded DAP buffers
+  only; global retention and disk quotas arrive later.
 - A target runs as the same OS user as the server and can inspect or modify its
   run directory, including the raw XML, between writer and parser. The pipeline
   detects symlink replacement and bounds the file, but it cannot prove evidence

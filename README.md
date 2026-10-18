@@ -14,7 +14,7 @@ The value of the project is not arbitrary command execution. It is:
 
 ## Project status
 
-**Early development — J4 (analysis API and pagination) complete.**
+**Early development — J5 (generic DAP client) complete.**
 
 The repository now provides:
 
@@ -37,11 +37,16 @@ The repository now provides:
   status, cancellation, per-request timeouts, filtered and cursor-paginated
   reports, bounded artifact excerpts, persisted-run fallback and response/cache
   quotas;
+- a generic DAP client (`internal/dap`): bounded Content-Length framing,
+  request/response correlation, late-response accounting, events, timeouts,
+  cancellation, capability negotiation, session state transitions, reverse
+  requests and a scripted mock adapter (`internal/dap/daptest`);
 - a functional Valgrind probe that exposes `backend.valgrind` as `available` only
   after Memcheck XML support is verified.
 
 `analysis_start` launches one allowlisted target under Valgrind; the other
-analysis tools only inspect its bounded evidence. GDB arrives with J6, LLDB with
+analysis tools only inspect its bounded evidence. The J5 DAP client is internal
+and does not launch a debugger or add an MCP tool: GDB arrives with J6, LLDB with
 J7, sanitizers and CTest with J9/J10, profilers with J12/J13. Do not deploy this
 project yet.
 
@@ -158,6 +163,8 @@ internal/jobs/                Job lifecycle, quotas and result manifests
 internal/diagnostic/          Canonical report, normalization and fingerprints
 internal/valgrind/            Memcheck options, XML parser and analysis service
 internal/analysis/            Analysis API, named errors, pagination and artifacts
+internal/dap/                 Generic DAP framing, client, state and capabilities
+internal/dap/daptest/         Scripted in-memory DAP adapter for tests
 internal/mcpserver/           MCP server, tool publication, analysis tools
 internal/version/             Build information
 testdata/fixtures/c/          Reviewed C fixtures for Memcheck E2E tests
@@ -168,6 +175,7 @@ docs/adr/                     Architecture decision records
 docs/configuration.md         Configuration reference
 docs/artifacts.md             Run directory layout and manifests
 docs/valgrind.md              Memcheck pipeline, report schema and limits
+docs/dap.md                   DAP framing, client lifecycle, state and limits
 docs/mcp.md                   MCP transport, tool discovery and payloads
 docs/compatibility.md         Recorded toolchain inventory
 config.example.json           Example configuration
@@ -184,6 +192,10 @@ Further analysis packages (`dap`, `debugger`, `sanitizer`, `profile`, `ctest`,
 ```sh
 ./scripts/check.sh      # gofmt, vet, go test, go test -race, go build
 ./scripts/preflight.sh  # read-only inventory; changes nothing
+
+# Focused DAP checks:
+go test ./internal/dap
+go test -fuzz=FuzzReadMessage -fuzztime=5s ./internal/dap
 ```
 
 `go test ./...` includes:
@@ -204,7 +216,11 @@ Further analysis packages (`dap`, `debugger`, `sanitizer`, `profile`, `ctest`,
 - a real stdio MCP end-to-end test that drives `analysis_start` → `status` →
   `report` → `artifact` against Valgrind, and integration tests for cancellation
   and per-request timeouts that verify no job slot leaks and no false clean
-  result.
+  result;
+- DAP client tests for fragmented frames, UTF-8 byte lengths, malformed and
+  oversized frames, out-of-order and late responses, EOF/Close unblocking,
+  pending/backpressure limits, blocked transports, capabilities, reverse
+  requests, state transitions and a fuzz target for the frame decoder.
 
 `preflight.sh` never installs packages, never edits kernel settings and never
 executes a user program. Installing tools is an explicit, human-approved step.

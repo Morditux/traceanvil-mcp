@@ -1,7 +1,7 @@
 # Compatibility inventory
 
 Recorded on 2026-10-18 from a **read-only** inspection of the reference development
-machine and refreshed at J4 from a read-only inspection. Re-run
+machine and refreshed at J5 from a read-only inspection. Re-run
 `./scripts/preflight.sh` after changing the toolchain and update this table; CI
 runners may differ.
 
@@ -78,14 +78,15 @@ Read only; the project never modifies these values.
   availability.
 - On this machine `backend.valgrind` is `available`, so `analysis_start` is
   published. `helgrind_run`, `drd_run`, `profile_callgrind`, `profile_massif`,
-  `profile_perf` and the LLDB backend must **not** appear in `tools/list` at J4.
-  `analysis_status`, `analysis_cancel`, `analysis_report` and `analysis_artifact`
-  are always published by the J4 server.
+  `profile_perf` and the LLDB backend must **not** appear in `tools/list` at
+  J4/J5. `analysis_status`, `analysis_cancel`, `analysis_report` and
+  `analysis_artifact` are always published by the J4/J5 server.
 - `backend.valgrind` is `available` after the functional Memcheck/XML help probe;
   every run revalidates the binary, and a capability refresh removes
   `analysis_start` if the backend disappears.
 - GDB and LLDB records remain `unknown` until their isolated DAP probes (J6/J7);
-  a binary on `PATH` alone is not sufficient.
+  a binary on `PATH` alone is not sufficient. The J5 DAP client is tested only
+  against the mock adapter and launches no debugger.
 - No tool reports "no errors" when its backend is missing; the result is an
   explicit unavailable/unsupported status.
 
@@ -93,7 +94,8 @@ Read only; the project never modifies these values.
 
 - At J1, `doctor` reported every backend as `unknown` (binary discovered) or
   `unavailable`. As of J3/J4, `backend.valgrind` is `available` on this machine;
-  `backend.gdb` and `backend.lldb` remain `unknown` until J6/J7.
+  `backend.gdb` and `backend.lldb` remain `unknown` until J6/J7. J5's DAP client
+  is internal and does not change backend discovery.
 - Valgrind support varies with kernel, architecture and instruction set. The J3
   probe checks `--version` plus the Memcheck XML options in `--tool=memcheck
   --help`; the first authorized fixture run revalidates the binary. A help check

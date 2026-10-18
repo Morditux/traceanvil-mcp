@@ -38,7 +38,7 @@ support dynamic lists must reconnect.
 
 ## Shared conventions
 
-- Every payload has a `schema_version` (`1` at J4). It changes only for an
+- Every payload has a `schema_version` (`1` at J4/J5). It changes only for an
   incompatible shape change; additive fields keep the version.
 - `run_id` is an opaque `run_<32 lowercase hex>` identifier. It is not a path.
 - `analysis_status.tool` is the requested analysis tool (`memcheck`);
@@ -412,7 +412,9 @@ hard cap.
 Valgrind becomes `available` only after the binary and its Memcheck XML options
 are verified. GDB and LLDB remain discovery-only and therefore `unknown` when
 their executable exists: a binary on `PATH` does not prove that a DAP session
-works.
+works. J5 added the internal generic DAP client, but no `debug_*` tool is
+published until the GDB backend lands in J6 and the LLDB backend in J7. See
+[dap.md](dap.md) for the transport, state machine and limits.
 
 ### Probe fields
 

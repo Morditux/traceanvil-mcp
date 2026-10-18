@@ -78,6 +78,29 @@ released yet; milestones map to the development plan.
   timeout and the full stdio MCP workflow.
 - J4: ADR 0007 and updated `docs/mcp.md`, `docs/valgrind.md`,
   `docs/artifacts.md`, `docs/configuration.md` and README.
+- J5: internal generic DAP client (`internal/dap`) with strict
+  `Content-Length` framing, UTF-8 byte lengths, bounded header/frame sizes and
+  typed protocol errors.
+- J5: request sequence allocation, pending response futures, out-of-order
+  correlation, late-response accounting, per-request contexts and a pending
+  request quota.
+- J5: single-owner reader/writer goroutines, bounded write queue, event channel
+  with explicit backpressure, write deadlines when the transport supports them,
+  idempotent shutdown and EOF handling.
+- J5: session state machine (`created` … `closed`), explicit
+  `BeginLaunch`/`ConfirmRunning`, stop-on-entry and terminal event transitions,
+  plus backend-driven `cancelled`/`timed_out` transitions.
+- J5: capability negotiation with a typed subset, raw `Supports` queries and
+  `initialized` response/event separation.
+- J5: adapter-initiated reverse requests with bounded concurrency, optional
+  handler, panic recovery and explicit rejection by default.
+- J5: reusable scripted in-memory adapter (`internal/dap/daptest`) with
+  independent framing.
+- J5: DAP tests for fragmented/malformed/oversized frames, UTF-8 lengths,
+  out-of-order and late responses, EOF/Close, pending and backpressure limits,
+  blocked transports, capabilities, reverse requests, state transitions and a
+  frame-decoder fuzz target.
+- J5: ADR 0008 and `docs/dap.md`; README/SECURITY updated.
 
 ### Changed
 
@@ -99,6 +122,8 @@ released yet; milestones map to the development plan.
   the J4 limitation warnings.
 - J4: `jobs.Spec.Timeout` and `valgrind.Request.Timeout` carry a per-run timeout;
   the manager clamps values above its own limit.
+- J5: no MCP tool or CLI command is added. The DAP client is internal until J6;
+  GDB and LLDB capability records remain `unknown`.
 
 ### Security
 
@@ -124,6 +149,17 @@ released yet; milestones map to the development plan.
 - J4: every analysis response is bounded by items and bytes; cache size is
   bounded; oversized or unreadable diagnostics are reported explicitly.
 - J4: capability refreshes only execute fixed tool probes, never user programs.
+- J5: DAP frames are bounded in header and payload size before allocation;
+  malformed, truncated or oversized frames become typed protocol failures, not
+  partial success.
+- J5: exactly one reader and one writer own the DAP stream; writes are serialized
+  and bounded, and a slow event consumer applies backpressure instead of growing
+  memory.
+- J5: request futures are bounded, late responses are ignored and counted, and
+  Close/EOF unblock pending requests without leaking goroutines.
+- J5: reverse requests are rejected by default; a configured handler is bounded,
+  panic-safe and receives a context canceled by Close.
+- J5: the DAP client launches no debugger and exposes no new MCP surface.
 
 ## 0.0.0 — 2026-10-18
 
