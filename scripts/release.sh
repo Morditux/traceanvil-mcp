@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build Linux release binaries, per-binary SBOMs and SHA-256 checksums.
+# Build Linux release binaries, Debian/RPM packages, SBOMs and checksums.
 # Module downloads may be needed on a cold module cache. Signing is optional and
 # requires an explicitly supplied GPG key. The script never installs packages.
 set -euo pipefail
@@ -29,6 +29,12 @@ if ! command -v go >/dev/null 2>&1; then
   printf 'go is required\n' >&2
   exit 1
 fi
+for tool in dpkg-deb rpmbuild; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    printf '%s is required\n' "$tool" >&2
+    exit 1
+  fi
+done
 
 commit="$(git rev-parse --short=12 HEAD)"
 if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
@@ -58,11 +64,12 @@ for arch in amd64 arm64; do
       -o "$dist/$name" ./cmd/mcp-native-diagnostics
   chmod 0755 "$dist/$name"
   "$repo_root/scripts/build-deb.sh" "$dist/$name" "${version#v}" "$arch"
+  "$repo_root/scripts/build-rpm.sh" "$dist/$name" "${version#v}" "$arch"
   "$sbom_tool" sbom --binary "$dist/$name" --version "$version" --name "mcp-native-diagnostics-linux-${arch}" --created "$build_date" --output "$dist/${name}.spdx.json"
 done
 (
   cd "$dist"
-  sha256sum ./*.spdx.json ./*.deb ./*_linux_amd64 ./*_linux_arm64 | LC_ALL=C sort > SHA256SUMS
+  sha256sum ./*.spdx.json ./*.deb ./*.rpm ./*_linux_amd64 ./*_linux_arm64 | LC_ALL=C sort > SHA256SUMS
 )
 
 if [[ -n "${RELEASE_GPG_KEY:-}" ]]; then

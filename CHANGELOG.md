@@ -14,6 +14,9 @@ the release process produces checksummed, SBOM-accompanied binaries.
 
 ### Added
 
+- Tagged CI releases now build and verify Debian and RPM packages for amd64
+  and arm64, publishing only those four packages as GitHub Release assets.
+  Prerelease tags create prereleases; workflow artifact uploads are removed.
 - J14: Ubuntu 22.04/24.04 CI matrix over Go 1.25.x and stable, plus a bounded
   fuzz-smoke job and `go mod verify` in the shared gate.
 - J14: safe artifact retention/purge with age, run-count and byte bounds,

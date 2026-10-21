@@ -184,7 +184,7 @@ for trust boundaries, retention, backup and upgrade guidance.
 A C toolchain is required for race tests and native fixtures. Backend integration
 tests skip with a reason when their required tools are unavailable.
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow and
-[release tooling](docs/release.md) for binaries, Debian packages, SBOMs and checksums.
+[release tooling](docs/release.md) for binaries, Debian/RPM packages, SBOMs and checksums.
 
 ## License
 
